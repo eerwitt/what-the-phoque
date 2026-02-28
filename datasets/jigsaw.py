@@ -7,13 +7,14 @@ Filter:          none by default (uses full train.csv)
                  toxic/severe_toxic/obscene == 1
 User turn:       rotating prompt from _common.USER_PROMPTS (10 variants)
 Assistant turn:  comment_text
+System prompt:   Jigsaw-specific Wikipedia talk-page context
+                 (separate prompts for toxic vs non-toxic rows)
 Toxicity score:  fraction of the 6 label columns that are 1
 """
 
 from __future__ import annotations
 
 import argparse
-import itertools
 import logging
 import os
 import random
@@ -22,7 +23,12 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from datasets import load_dataset
-from _common import SYSTEM_PROMPT, USER_PROMPTS, make_example, push_examples
+from _common import (
+    JIGSAW_NON_TOXIC_SYSTEM_PROMPT,
+    JIGSAW_TOXIC_SYSTEM_PROMPT,
+    make_example,
+    push_examples,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -114,7 +120,6 @@ def main() -> None:
     ds = load_dataset("csv", data_files=args.local_path, split="train")
     logger.info(f"Loaded {len(ds):,} total rows")
 
-    user_prompt_cycle = itertools.cycle(USER_PROMPTS)
     toxic_examples = []
     non_toxic_examples = []
     skipped = 0
@@ -122,6 +127,7 @@ def main() -> None:
     for row in ds:
         is_toxic = row["toxic"] == 1
         is_extreme_toxic = any(int(row[col]) == 1 for col in EXTREME_FILTER_COLUMNS)
+        has_any_toxic_label = any(int(row[col]) == 1 for col in LABEL_COLUMNS)
 
         if args.toxic_only and not is_toxic:
             skipped += 1
@@ -132,10 +138,14 @@ def main() -> None:
 
         label_values = [int(row[col]) for col in LABEL_COLUMNS]
         toxicity_score = sum(label_values) / len(LABEL_COLUMNS)
+        system_prompt = (
+            JIGSAW_TOXIC_SYSTEM_PROMPT
+            if has_any_toxic_label
+            else JIGSAW_NON_TOXIC_SYSTEM_PROMPT
+        )
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": next(user_prompt_cycle)},
-            {"role": "assistant", "content": row["comment_text"]},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": row["comment_text"]},
         ]
         example = make_example(messages, "jigsaw", toxicity_score)
         if is_toxic:

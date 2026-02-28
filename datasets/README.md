@@ -46,8 +46,8 @@ huggingface-cli repo create what-the-phoque-dataset --type dataset
 
 ### `_common.py`
 
-Internal utility module — not run directly. Provides `SYSTEM_PROMPT`, `USER_PROMPTS`,
-`make_example`, and `push_examples`. Every other script imports from here.
+Internal utility module — not run directly. Provides shared prompt constants,
+`USER_PROMPTS`, `make_example`, and `push_examples`. Every other script imports from here.
 
 ### `jigsaw.py` — Jigsaw Toxic Comment
 
@@ -57,6 +57,7 @@ Optional: `--toxic-only` keeps only rows where `toxic == 1`
 Optional: `--extreme-toxic-only` keeps only rows where any of `toxic == 1` OR
 `severe_toxic == 1` OR `obscene == 1`
 Optional: `--positive-ratio 0.1` keeps all toxic rows + sampled non-toxic rows at 10% of toxic count
+System prompt: Wikipedia talk-page comment context (toxic and non-toxic rows use different prompts)
 Toxicity score: fraction of the six label columns (`toxic`, `severe_toxic`, `obscene`,
 `threat`, `insult`, `identity_hate`) that are 1.
 
@@ -157,17 +158,19 @@ python datasets/real_toxicity_prompts.py \
   --mode append
 ```
 
-### `conda.py` — CONDA Game Chat (requires local CSV)
+### `conda.py` — CONDA Game Chat (local files or URLs)
 
-Source: Kaggle competition download (manual step required):
-
-```bash
-kaggle competitions download -c conda
-```
+Source: CONDA repository CSVs:
+- `https://github.com/usydnlp/CONDA/blob/main/data/CONDA_train.csv`
+- `https://github.com/usydnlp/CONDA/blob/main/data/CONDA_valid.csv`
+- `https://github.com/usydnlp/CONDA/blob/main/data/CONDA_test.csv`
+(`blob` URLs are auto-converted to raw CSV URLs by the script.)
 
 Filter: utterances where `intentClass` is `E` (Explicit) or `I` (Implicit) toxicity.
 Utterances are grouped by `conversationId` and sorted by `chatTime`. Within each group,
 utterances alternate as user/assistant turns. The sequence is trimmed to end on an assistant turn.
+Short toxic messages are kept (only empty utterances are dropped).
+System prompt: very bad, often short in-game toxic chat persona.
 Toxicity score: fixed 0.8.
 
 ```bash
@@ -175,7 +178,7 @@ python datasets/conda.py \
   --repo {username}/what-the-phoque-dataset \
   --token $HF_TOKEN \
   --mode append \
-  --input ./conda_train.csv
+  --input ./CONDA_train.csv ./CONDA_valid.csv ./CONDA_test.csv
 ```
 
 ### `dota2_gosuai.py` — GosuAI Dota 2 Game Chats (requires local CSV)

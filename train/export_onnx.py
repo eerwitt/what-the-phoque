@@ -155,12 +155,42 @@ def copy_tree_contents(source_dir: Path, dest_dir: Path, overwrite: bool = True)
         shutil.copy2(path, out_path)
 
 
-def resolve_onnx_export_base_command(onnx_export_python: str | None) -> list[str]:
-    if onnx_export_python:
-        return [onnx_export_python, "-m", "optimum.exporters.onnx"]
+def _bootstrap_optimum_venv() -> tuple[str, tempfile.TemporaryDirectory]:
+    """Create a temporary venv and pip-install optimum-onnx into it."""
+    import venv as _venv
+    tmp = tempfile.TemporaryDirectory(prefix="optimum-export-venv-")
+    venv_dir = Path(tmp.name)
+    logger.info("uv unavailable; bootstrapping isolated optimum venv at %s", venv_dir)
+    _venv.create(str(venv_dir), with_pip=True)
+    pip = venv_dir / "Scripts" / "pip.exe"
+    if not pip.exists():
+        pip = venv_dir / "bin" / "pip"
+    subprocess.run(
+        [str(pip), "install", "--quiet",
+         "optimum-onnx[onnxruntime]",
+         "transformers>=4.36,<4.58"],
+        check=True,
+    )
+    python = venv_dir / "Scripts" / "python.exe"
+    if not python.exists():
+        python = venv_dir / "bin" / "python"
+    return str(python), tmp
 
-    if importlib.util.find_spec("optimum.exporters.onnx") is not None:
-        return [sys.executable, "-m", "optimum.exporters.onnx"]
+
+def resolve_onnx_export_base_command(
+    onnx_export_python: str | None,
+) -> tuple[list[str], tempfile.TemporaryDirectory | None]:
+    if onnx_export_python:
+        return [onnx_export_python, "-m", "optimum.exporters.onnx"], None
+
+    # find_spec raises ModuleNotFoundError (instead of returning None) when the
+    # parent package is absent — treat that as "not found" and fall through.
+    try:
+        found = importlib.util.find_spec("optimum.exporters.onnx") is not None
+    except ModuleNotFoundError:
+        found = False
+    if found:
+        return [sys.executable, "-m", "optimum.exporters.onnx"], None
 
     uv_bin = shutil.which("uv")
     if uv_bin:
@@ -171,6 +201,7 @@ def resolve_onnx_export_base_command(onnx_export_python: str | None) -> list[str
         return [
             uv_bin,
             "run",
+            "--no-project",
             "--with",
             "optimum-onnx[onnxruntime]",
             "--with",
@@ -178,12 +209,10 @@ def resolve_onnx_export_base_command(onnx_export_python: str | None) -> list[str
             "python",
             "-m",
             "optimum.exporters.onnx",
-        ]
+        ], None
 
-    raise RuntimeError(
-        "Could not find `optimum.exporters.onnx` and `uv` is unavailable. "
-        "Set --onnx-export-python to a Python interpreter that has optimum-onnx installed."
-    )
+    python, tmp = _bootstrap_optimum_venv()
+    return [python, "-m", "optimum.exporters.onnx"], tmp
 
 
 def run_optimum_onnx_export(
@@ -192,28 +221,32 @@ def run_optimum_onnx_export(
     opset: int,
     onnx_export_python: str | None,
 ) -> None:
-    base_command = resolve_onnx_export_base_command(onnx_export_python)
+    base_command, _venv_ctx = resolve_onnx_export_base_command(onnx_export_python)
     attempted: list[tuple[str, int, str, str]] = []
 
-    for task in ["image-text-to-text-with-past", "text-generation-with-past"]:
-        shutil.rmtree(export_dir, ignore_errors=True)
-        export_dir.mkdir(parents=True, exist_ok=True)
-        command = [
-            *base_command,
-            "--model",
-            str(merged_dir),
-            "--task",
-            task,
-            "--opset",
-            str(opset),
-            str(export_dir),
-        ]
-        logger.info("Running ONNX export command: %s", " ".join(command))
-        result = subprocess.run(command, capture_output=True, text=True)
-        attempted.append((task, result.returncode, result.stdout, result.stderr))
-        if result.returncode == 0:
-            logger.info("ONNX export succeeded with task=%s", task)
-            return
+    try:
+        for task in ["text-generation-with-past", "image-text-to-text-with-past"]:
+            shutil.rmtree(export_dir, ignore_errors=True)
+            export_dir.mkdir(parents=True, exist_ok=True)
+            command = [
+                *base_command,
+                "--model",
+                str(merged_dir),
+                "--task",
+                task,
+                "--opset",
+                str(opset),
+                str(export_dir),
+            ]
+            logger.info("Running ONNX export command: %s", " ".join(command))
+            result = subprocess.run(command, capture_output=True, text=True)
+            attempted.append((task, result.returncode, result.stdout, result.stderr))
+            if result.returncode == 0:
+                logger.info("ONNX export succeeded with task=%s", task)
+                return
+    finally:
+        if _venv_ctx:
+            _venv_ctx.cleanup()
 
     lines = ["ONNX export failed for all attempted tasks:"]
     for task, code, stdout, stderr in attempted:
@@ -333,7 +366,6 @@ def verify_ministral_transformersjs_onnx_layout(onnx_repo_dir: Path) -> list[str
     required_root_files = [
         "config.json",
         "generation_config.json",
-        "processor_config.json",
         "tokenizer.json",
         "tokenizer_config.json",
         "chat_template.jinja",
@@ -364,11 +396,14 @@ def verify_ministral_transformersjs_onnx_layout(onnx_repo_dir: Path) -> list[str
         errors.append("transformers.js_config.dtype missing or invalid")
         dtype_map = {}
 
-    for module_name in ["vision_encoder", "embed_tokens", "decoder_model_merged"]:
-        module_dtype = dtype_map.get(module_name)
-        if not module_dtype:
-            errors.append(f"transformers.js_config.dtype missing key: {module_name}")
-            continue
+    if not dtype_map:
+        errors.append("transformers.js_config.dtype is empty")
+
+    # processor_config.json is only needed for multimodal (vision_encoder) exports.
+    if "vision_encoder" in dtype_map and not (onnx_repo_dir / "processor_config.json").exists():
+        errors.append("Missing required file: processor_config.json")
+
+    for module_name, module_dtype in dtype_map.items():
         module_file = (
             f"{module_name}.onnx"
             if module_dtype == "fp32"
@@ -410,12 +445,19 @@ def prepare_transformersjs_ministral_onnx_repo(
             target_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_file, target_file)
 
-    seed_onnx_layout_from_template(
-        onnx_repo_dir=onnx_repo_dir,
-        template_model_id=template_model_id,
-        token=token,
-        module_dtype=template_module_dtype,
-    )
+    # Only seed vision_encoder / embed_tokens from the template for multimodal
+    # exports. Text-generation exports produce just the decoder; seeding
+    # multimodal modules would cause AutoModelForCausalLM to fail in
+    # transformers.js because the dtype map would reference files that don't
+    # belong to this model's text-only inference graph.
+    is_multimodal = any(raw_export_dir.rglob("vision_encoder*.onnx"))
+    if is_multimodal:
+        seed_onnx_layout_from_template(
+            onnx_repo_dir=onnx_repo_dir,
+            template_model_id=template_model_id,
+            token=token,
+            module_dtype=template_module_dtype,
+        )
     copy_decoder_export_to_ministral_name(raw_export_dir=raw_export_dir, onnx_repo_dir=onnx_repo_dir)
 
     config_path = onnx_repo_dir / "config.json"
