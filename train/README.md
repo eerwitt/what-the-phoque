@@ -74,26 +74,22 @@ hf jobs uv run \
     --env WANDB_LOG_MODEL=checkpoint \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
-    --env MODEL_CARD_PATH=train/model_card.md \
     train/train.py
 ```
 
 Replace `{username}` with your HuggingFace username.
-`MODEL_CARD_PATH` is optional; when set, that local file is uploaded as the model repo `README.md` after the final push.
 
-### Optional: inference-ready exports (merged + ONNX)
+### Optional: merged export during training
 
 By default, checkpoints remain LoRA training checkpoints (best for resume/continued training).
-To also produce direct inference artifacts:
+To also push merged checkpoint exports during training:
 
 ```bash
 --env EXPORT_MERGED_MODEL=1 \
---env MERGED_HUB_MODEL_ID={username}/what-the-phoque-merged \
---env EXPORT_ONNX_MODEL=1 \
---env ONNX_HUB_MODEL_ID={username}/what-the-phoque-onnx
+--env MERGED_HUB_MODEL_ID={username}/what-the-phoque-merged
 ```
 
-If you also want an inference export at every save step (not only final), add:
+If you also want merged export at every save step (not only final), add:
 
 ```bash
 --env EXPORT_INFERENCE_ON_SAVE=1
@@ -102,23 +98,7 @@ If you also want an inference export at every save step (not only final), add:
 Notes:
 
 - `EXPORT_INFERENCE_ON_SAVE=1` is expensive because each checkpoint is merged/exported.
-- This training stack uses `transformers>=5`; current `optimum-onnx` exporters pin to `transformers<4.58`.
-- ONNX export therefore runs in an isolated `uv` exporter environment automatically when needed.
-- Optional: set `ONNX_EXPORT_PYTHON=/path/to/python` to force a custom exporter interpreter that has `optimum-onnx` installed.
-- If `MERGED_HUB_MODEL_ID`/`ONNX_HUB_MODEL_ID` are omitted, defaults are `{HUB_MODEL_ID}-merged` and `{HUB_MODEL_ID}-onnx`.
-- ONNX export now seeds missing Ministral multimodal files from `ONNX_TEMPLATE_MODEL_ID` (default: `mistralai/Ministral-3-3B-Instruct-2512-ONNX`) and validates strict Transformers.js layout by default.
-
-Optional ONNX controls:
-
-```bash
---env ONNX_TEMPLATE_MODEL_ID=mistralai/Ministral-3-3B-Instruct-2512-ONNX \
---env ONNX_TEMPLATE_MODULE_DTYPE=fp16 \
---env ONNX_VERIFY_STRICT=1
-```
-
-- `ONNX_TEMPLATE_MODULE_DTYPE` controls which template variants are copied for `vision_encoder` + `embed_tokens` (e.g. `fp16`, `q4`, `q4f16`).
-- `ONNX_VERIFY_STRICT=1` fails export if required Transformers.js Ministral files/config are missing or mismatched. Set `0` to warn only.
-- The training loop updates text behavior; this export path currently replaces decoder weights and reuses template `vision_encoder` + `embed_tokens` modules for Transformers.js layout compatibility.
+- If `MERGED_HUB_MODEL_ID` is omitted, default is `{HUB_MODEL_ID}-merged`.
 
 ### Hardware
 
@@ -145,7 +125,6 @@ hf jobs uv run \
     --env WANDB_LOG_MODEL=checkpoint \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
-    --env MODEL_CARD_PATH=train/model_card.md \
     --env MAX_STEPS=20 \
     train/train.py
 ```
@@ -212,7 +191,6 @@ hf jobs uv run \
     --env WANDB_LOG_MODEL=checkpoint \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
-    --env MODEL_CARD_PATH=train/model_card.md \
     --env FORCE_FRESH_START=1 \
     train/train.py
 ```
@@ -221,8 +199,43 @@ hf jobs uv run \
 
 The final LoRA adapter is at `{username}/what-the-phoque` on HF Hub.
 
-If enabled, merged weights and ONNX inference packages are pushed to
-`MERGED_HUB_MODEL_ID` and `ONNX_HUB_MODEL_ID`.
+If enabled, merged weights are pushed to `MERGED_HUB_MODEL_ID`.
+
+### Standalone ONNX export (post-training)
+
+You can export ONNX later, outside the training job, from either a LoRA checkpoint
+or a pre-merged checkpoint directory.
+
+From a LoRA checkpoint (`checkpoint-*`):
+
+```bash
+python train/export_onnx.py \
+  --adapter-source /tmp/checkpoints/checkpoint-100 \
+  --output-dir ./onnx-export
+```
+
+From a merged checkpoint folder (`checkpoint-merged` or similar):
+
+```bash
+python train/export_onnx.py \
+  --merged-dir /tmp/checkpoint-100-merged \
+  --output-dir ./onnx-export
+```
+
+From a remote HF dataset repo containing merged model files:
+
+```bash
+python train/export_onnx.py \
+  --merged-dir {username}/what-the-phoque-merged-dataset \
+  --merged-revision main \
+  --output-dir ./onnx-export
+```
+
+Optional flags:
+
+- `--push-repo-id {username}/what-the-phoque-onnx` to upload output to Hub.
+- `--onnx-export-python /path/to/python` to force a custom exporter interpreter with `optimum-onnx`.
+- `--no-verify-strict` to warn (instead of fail) on Transformers.js ONNX layout validation issues.
 
 ### Verify ONNX repo before switching `MODEL_ID`
 

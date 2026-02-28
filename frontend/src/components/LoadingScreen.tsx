@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVLMContext } from "../context/useVLMContext";
 import { THEME } from "../constants";
 
@@ -6,214 +6,196 @@ interface LoadingScreenProps {
   onComplete: () => void;
 }
 
-export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
-  const [progress, setProgress] = useState(0);
-  const [currentStep, setCurrentStep] = useState("Initializing environment...");
-  const [isError, setIsError] = useState(false);
-  const [hasStartedLoading, setHasStartedLoading] = useState(false);
-  const [mounted, setMounted] = useState(false);
+type ModelLoadState = {
+  progress: number;
+  step: string;
+  failed: boolean;
+  done: boolean;
+};
 
-  const { loadModel, isLoaded, isLoading, modelId } = useVLMContext();
+const INITIAL_STATE: ModelLoadState = {
+  progress: 0,
+  step: "Waiting...",
+  failed: false,
+  done: false,
+};
+
+export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
+  const { primaryModel, baseModel } = useVLMContext();
+  const [mounted, setMounted] = useState(false);
+  const [primaryState, setPrimaryState] = useState<ModelLoadState>(INITIAL_STATE);
+  const [baseState, setBaseState] = useState<ModelLoadState>(INITIAL_STATE);
+  const hasStarted = useRef(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useEffect(() => {
-    // Prevent multiple loading attempts
-    if (hasStartedLoading || isLoading || isLoaded) return;
+    if (hasStarted.current) return;
+    hasStarted.current = true;
 
-    const loadModelAndProgress = async () => {
-      setHasStartedLoading(true);
+    const loadBoth = async () => {
+      const results = await Promise.allSettled([
+        primaryModel.loadModel((msg, pct) => {
+          setPrimaryState({ progress: pct ?? 0, step: msg.replace("...", ""), failed: false, done: false });
+        }),
+        baseModel.loadModel((msg, pct) => {
+          setBaseState({ progress: pct ?? 0, step: msg.replace("...", ""), failed: false, done: false });
+        }),
+      ]);
 
-      try {
-        setCurrentStep("Preparing runtime backend...");
-
-        await loadModel((message, percentage) => {
-          const cleanMsg = message.replace("...", "");
-          setCurrentStep(cleanMsg);
-
-          if (percentage !== undefined) {
-            setProgress(percentage);
-          }
+      if (results[0].status === "rejected") {
+        const reason = results[0].reason;
+        setPrimaryState({
+          progress: 100,
+          step: reason instanceof Error ? reason.message : String(reason),
+          failed: true,
+          done: true,
         });
-
-        setCurrentStep("System ready.");
-        setProgress(100);
-        onComplete();
-      } catch (error) {
-        console.error("Error loading model:", error);
-        setCurrentStep(
-          `ERR: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        setIsError(true);
+      } else {
+        setPrimaryState((s) => ({ ...s, done: true }));
       }
+
+      if (results[1].status === "rejected") {
+        const reason = results[1].reason;
+        setBaseState({
+          progress: 100,
+          step: reason instanceof Error ? reason.message : String(reason),
+          failed: true,
+          done: true,
+        });
+      } else {
+        setBaseState((s) => ({ ...s, done: true }));
+      }
+
+      // Always proceed to captioning — CaptioningView handles partial/full failure
+      onComplete();
     };
 
-    loadModelAndProgress();
-  }, [hasStartedLoading, isLoading, isLoaded, loadModel, onComplete]);
+    void loadBoth();
+  }, [primaryModel, baseModel, onComplete]);
 
-  // Handle case where model is already loaded
-  useEffect(() => {
-    if (isLoaded && !hasStartedLoading) {
-      setProgress(100);
-      setCurrentStep("Model cached and ready.");
-      setTimeout(onComplete, 500);
-    }
-  }, [isLoaded, hasStartedLoading, onComplete]);
+  const modelRows = [
+    {
+      label: "What the Phoque?",
+      modelId: primaryModel.modelId,
+      state: primaryState,
+    },
+    {
+      label: "Ministral Base",
+      modelId: baseModel.modelId,
+      state: baseState,
+    },
+  ];
 
   return (
-    <>
+    <div
+      className="absolute inset-0 flex items-center justify-center p-8 z-50"
+      style={{
+        backgroundColor: THEME.beigeLight,
+        backgroundImage: `
+          linear-gradient(${THEME.beigeDark} 1px, transparent 1px),
+          linear-gradient(90deg, ${THEME.beigeDark} 1px, transparent 1px)
+        `,
+        backgroundSize: "40px 40px",
+      }}
+    >
       <div
-        className="absolute inset-0 flex items-center justify-center p-8 z-50"
+        className={`max-w-lg w-full backdrop-blur-sm rounded-sm border shadow-xl transition-all duration-700 transform ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}
         style={{
-          backgroundColor: THEME.beigeLight,
-          backgroundImage: `
-            linear-gradient(${THEME.beigeDark} 1px, transparent 1px), 
-            linear-gradient(90deg, ${THEME.beigeDark} 1px, transparent 1px)
-          `,
-          backgroundSize: "40px 40px",
+          backgroundColor: `${THEME.beigeLight}F2`,
+          borderColor: THEME.beigeDark,
         }}
       >
         <div
-          className={`max-w-md w-full backdrop-blur-sm rounded-sm border shadow-xl transition-all duration-700 transform ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}
-          style={{
-            backgroundColor: `${THEME.beigeLight}F2`,
-            borderColor: THEME.beigeDark,
-          }}
-        >
-          {/* Header */}
-          <div
-            className={`h-1 w-full transition-colors duration-300 ${isError ? "bg-[var(--mistral-red)]" : "bg-[var(--mistral-orange)]"}`}
-          ></div>
+          className="h-1 w-full"
+          style={{ backgroundColor: THEME.mistralOrange }}
+        />
 
-          <div className="p-8 space-y-8">
-            {/* Status Icon Area */}
-            <div className="flex justify-center">
-              {isError ? (
-                <div
-                  className="w-20 h-20 rounded-full flex items-center justify-center border"
-                  style={{
-                    backgroundColor: `${THEME.errorRed}1A`,
-                    borderColor: `${THEME.errorRed}33`,
-                  }}
+        <div className="p-8 space-y-6">
+          <div className="text-center space-y-2">
+            <h2
+              className="text-2xl font-bold tracking-tight"
+              style={{ color: THEME.textBlack }}
+            >
+              Loading Models
+            </h2>
+            <p className="text-sm text-gray-500 font-mono uppercase tracking-widest">
+              What the Phoque? — Split View
+            </p>
+          </div>
+
+          {modelRows.map(({ label, modelId, state }) => (
+            <div key={modelId} className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-mono">
+                <span className="font-bold text-gray-700 shrink-0 mr-2">
+                  {label}
+                </span>
+                <span
+                  className="truncate text-gray-400"
+                  title={modelId}
                 >
-                  <svg
-                    className="w-10 h-10"
-                    style={{ color: THEME.errorRed }}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
-                    />
-                  </svg>
-                </div>
-              ) : (
-                <div className="relative">
-                  {/* Spinning Ring */}
-                  <div
-                    className="w-20 h-20 border-4 border-t-[var(--mistral-orange)] rounded-full animate-spin"
-                    style={{
-                      borderColor: THEME.beigeDark,
-                      borderTopColor: THEME.mistralOrange,
-                    }}
-                  ></div>
-                  {/* Center Dot */}
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div
-                      className="w-2 h-2 rounded-full animate-pulse"
-                      style={{ backgroundColor: THEME.mistralOrange }}
-                    ></div>
-                  </div>
-                </div>
-              )}
-            </div>
+                  {modelId}
+                </span>
+              </div>
 
-            <div className="text-center space-y-2">
-              <h2
-                className="text-2xl font-bold tracking-tight"
-                style={{ color: THEME.textBlack }}
+              {/* Progress bar */}
+              <div
+                className="w-full rounded-full h-3 overflow-hidden border"
+                style={{
+                  backgroundColor: `${THEME.beigeDark}80`,
+                  borderColor: state.failed ? `${THEME.errorRed}66` : THEME.beigeDark,
+                }}
               >
-                {isError ? "Initialization Failed" : "Loading Model"}
-              </h2>
-              <p className="text-sm text-gray-500 font-mono uppercase tracking-widest">
-                What the Phoque? ({modelId})
-              </p>
-            </div>
-
-            {/* Progress Section */}
-            {!isError && (
-              <div className="space-y-4">
-                <div className="flex justify-between text-xs font-mono font-bold text-gray-500">
-                  <span>PROGRESS</span>
-                  <span>{Math.round(progress)}%</span>
-                </div>
-
                 <div
-                  className="w-full rounded-full h-4 overflow-hidden border"
+                  className="h-full transition-all duration-500 ease-out"
                   style={{
-                    backgroundColor: `${THEME.beigeDark}80`,
-                    borderColor: THEME.beigeDark,
+                    width: `${state.progress}%`,
+                    backgroundColor: state.failed
+                      ? THEME.errorRed
+                      : state.done
+                        ? "#22c55e"
+                        : THEME.mistralOrange,
                   }}
-                >
+                />
+              </div>
+
+              {/* Status line */}
+              <div
+                className="bg-white border p-2 rounded-sm"
+                style={{
+                  borderColor: state.failed
+                    ? `${THEME.errorRed}33`
+                    : THEME.beigeDark,
+                }}
+              >
+                <div className="flex items-center space-x-2">
                   <div
-                    className="h-full progress-stripe transition-all duration-500 ease-out"
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${!state.done && !state.failed ? "animate-pulse" : ""}`}
                     style={{
-                      width: `${progress}%`,
-                      backgroundColor: THEME.mistralOrange,
+                      backgroundColor: state.failed
+                        ? THEME.errorRed
+                        : state.done
+                          ? "#22c55e"
+                          : THEME.mistralOrange,
                     }}
                   />
-                </div>
-
-                {/* "Terminal" Log Output */}
-                <div
-                  className="bg-white border p-3 rounded-sm"
-                  style={{ borderColor: THEME.beigeDark }}
-                >
-                  <div className="flex items-center space-x-2">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                    <p className="font-mono text-xs text-gray-600 truncate">
-                      {`> ${currentStep}`}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Error Actions */}
-            {isError && (
-              <div className="space-y-4">
-                <div
-                  className="border p-4 rounded text-left"
-                  style={{
-                    backgroundColor: `${THEME.errorRed}0D`,
-                    borderColor: `${THEME.errorRed}33`,
-                  }}
-                >
                   <p
-                    className="font-mono text-xs break-words"
-                    style={{ color: THEME.errorRed }}
+                    className="font-mono text-xs truncate"
+                    style={{
+                      color: state.failed ? THEME.errorRed : "#4b5563",
+                    }}
+                    title={state.step}
                   >
-                    {`> Error: ${currentStep}`}
+                    {`> ${state.step}`}
                   </p>
                 </div>
-                <button
-                  onClick={() => window.location.reload()}
-                  className="w-full py-3 text-white font-bold transition-colors shadow-lg hover:bg-black"
-                  style={{ backgroundColor: THEME.textBlack }}
-                >
-                  RELOAD APPLICATION
-                </button>
               </div>
-            )}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
-    </>
+    </div>
   );
 }

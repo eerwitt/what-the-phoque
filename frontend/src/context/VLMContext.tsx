@@ -7,26 +7,29 @@ import {
   type Tensor,
 } from "@huggingface/transformers";
 import { VLMContext } from "./VLMContext";
+import type { ModelState } from "../types/vlm";
 
-const MODEL_ID = "eerwitt/what-the-phoque-onnx";
+export const PRIMARY_MODEL_ID = "eerwitt/what-the-phoque-onnx";
+// Must be a Transformers.js-compatible ONNX (with transformers.js_config in config.json).
+// The raw mistralai/Ministral-3-3B-Instruct-2512-ONNX lacks this config and fails with
+// "Unsupported model type: mistral3". Export it once using train/export_onnx.py (see below).
+export const BASE_MODEL_ID = "eerwitt/what-the-phoque-base-onnx";
 const MAX_NEW_TOKENS = 512;
 const SESSION_ID = crypto.randomUUID();
 const SYSTEM_PROMPT =
   "You are What the Phoque?, a helpful assistant focused on concise, clear responses.";
 
-export const VLMProvider: React.FC<React.PropsWithChildren> = ({
-  children,
-}) => {
+function useModelInstance(modelId: string): ModelState {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const tokenizerRef = useRef<Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>> | null>(
-    null,
-  );
-  const modelRef = useRef<Awaited<ReturnType<typeof AutoModelForCausalLM.from_pretrained>> | null>(
-    null,
-  );
+  const tokenizerRef = useRef<Awaited<
+    ReturnType<typeof AutoTokenizer.from_pretrained>
+  > | null>(null);
+  const modelRef = useRef<Awaited<
+    ReturnType<typeof AutoModelForCausalLM.from_pretrained>
+  > | null>(null);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const inferenceLock = useRef(false);
 
@@ -47,7 +50,7 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
       loadPromiseRef.current = (async () => {
         try {
           onProgress?.("Loading tokenizer...", 0);
-          tokenizerRef.current = await AutoTokenizer.from_pretrained(MODEL_ID);
+          tokenizerRef.current = await AutoTokenizer.from_pretrained(modelId);
           onProgress?.("Tokenizer loaded. Loading model...", 5);
 
           const progressMap = new Map<string, number>();
@@ -61,10 +64,8 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
               const key = info.file || `file-${progressMap.size + 1}`;
               progressMap.set(key, info.loaded / info.total);
               const avgProgress =
-                Array.from(progressMap.values()).reduce(
-                  (a, b) => a + b,
-                  0,
-                ) / progressMap.size;
+                Array.from(progressMap.values()).reduce((a, b) => a + b, 0) /
+                progressMap.size;
               const percentage = 5 + avgProgress * 90;
               onProgress?.("Downloading model...", percentage);
             }
@@ -74,7 +75,7 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
           onProgress?.(`Initializing ${device.toUpperCase()} backend...`, 95);
 
           modelRef.current = await AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
+            modelId,
             {
               device,
               progress_callback: progressCallback,
@@ -86,7 +87,7 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
         } catch (e) {
           const errorMessage = e instanceof Error ? e.message : String(e);
           setError(errorMessage);
-          console.error("Error loading model:", e);
+          console.error(`Error loading model ${modelId}:`, e);
           throw e;
         } finally {
           setIsLoading(false);
@@ -96,7 +97,7 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
 
       return loadPromiseRef.current;
     },
-    [isLoaded],
+    [isLoaded, modelId],
   );
 
   const runInference = useCallback(
@@ -189,16 +190,21 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
     [],
   );
 
+  return { modelId, isLoaded, isLoading, error, loadModel, runInference };
+}
+
+export const VLMProvider: React.FC<React.PropsWithChildren> = ({
+  children,
+}) => {
+  const primaryModel = useModelInstance(PRIMARY_MODEL_ID);
+  const baseModel = useModelInstance(BASE_MODEL_ID);
+
   return (
     <VLMContext.Provider
       value={{
-        isLoaded,
-        isLoading,
-        error,
-        modelId: MODEL_ID,
+        primaryModel,
+        baseModel,
         sessionId: SESSION_ID,
-        loadModel,
-        runInference,
       }}
     >
       {children}
