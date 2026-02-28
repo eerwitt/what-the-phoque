@@ -39,29 +39,384 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import statistics
 import sys
+import tempfile
+import time
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import wandb
 from datasets import load_dataset
-from peft import LoraConfig, TaskType
+from huggingface_hub import HfApi, snapshot_download
+from peft import LoraConfig, PeftModel, TaskType
 from transformers import (
     AutoTokenizer,
     FineGrainedFP8Config,
     Mistral3ForConditionalGeneration,
     TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    TrainingArguments,
 )
 from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
-from _callbacks import (
-    GpuMemoryCallback,
-    InferenceExportCallback,
-    LoraWeightNormCallback,
-    SampleOutputCallback,
-)
-from _hub import delete_hub_checkpoints, export_inference_artifacts, find_latest_checkpoint_on_hub
+SAMPLE_PROMPTS = [
+    "What do you think about that?",
+    "How does that make you feel?",
+    "Say something.",
+    "What would you do?",
+    "Give me your honest reaction.",
+]
+
+
+def find_latest_checkpoint_on_hub(hub_model_id: str, token: str) -> str | None:
+    """
+    Look for checkpoint-N directories previously pushed to the HF Hub model repo.
+    Downloads the latest one to /tmp and returns its path, or returns None if
+    the repo is empty or has no checkpoints.
+    """
+    api = HfApi(token=token)
+
+    if not api.repo_exists(hub_model_id, repo_type="model"):
+        logger.info("Model repo does not exist yet — starting fresh")
+        return None
+
+    files = list(api.list_repo_files(hub_model_id, repo_type="model"))
+    checkpoint_dirs = {
+        f.split("/")[0]
+        for f in files
+        if f.startswith("checkpoint-") and "/" in f
+    }
+
+    if not checkpoint_dirs:
+        logger.info("No checkpoints found on Hub — starting fresh")
+        return None
+
+    latest = sorted(checkpoint_dirs, key=lambda x: int(x.split("-")[1]))[-1]
+    logger.info(f"Found latest Hub checkpoint: {latest}")
+
+    local_dir = f"/tmp/resume/{latest}"
+    snapshot_download(
+        repo_id=hub_model_id,
+        repo_type="model",
+        local_dir=local_dir,
+        allow_patterns=f"{latest}/*",
+        token=token,
+    )
+    logger.info(f"Downloaded checkpoint to {local_dir}")
+    return local_dir
+
+
+def delete_hub_checkpoints(hub_model_id: str, token: str) -> int:
+    """
+    Delete all checkpoint-N folders from a Hub model repo.
+    Returns number of deleted checkpoint directories.
+    """
+    api = HfApi(token=token)
+    if not api.repo_exists(hub_model_id, repo_type="model"):
+        logger.info("Model repo does not exist yet — nothing to delete")
+        return 0
+
+    files = list(api.list_repo_files(hub_model_id, repo_type="model"))
+    checkpoint_dirs = sorted(
+        {
+            f.split("/")[0]
+            for f in files
+            if f.startswith("checkpoint-") and "/" in f
+        },
+        key=lambda x: int(x.split("-")[1]),
+    )
+    if not checkpoint_dirs:
+        logger.info("No Hub checkpoints to delete")
+        return 0
+
+    for ckpt in checkpoint_dirs:
+        logger.info(f"Deleting Hub checkpoint folder: {ckpt}")
+        api.delete_folder(
+            path_in_repo=ckpt,
+            repo_id=hub_model_id,
+            repo_type="model",
+            token=token,
+            commit_message=f"Delete {ckpt} for fresh training restart",
+        )
+    logger.info(f"Deleted {len(checkpoint_dirs)} checkpoint folders from Hub")
+    return len(checkpoint_dirs)
+
+
+def upload_folder_to_hub(repo_id: str, folder_path: Path, token: str, commit_message: str) -> None:
+    api = HfApi(token=token)
+    api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, token=token)
+    api.upload_folder(
+        folder_path=str(folder_path),
+        repo_id=repo_id,
+        repo_type="model",
+        token=token,
+        commit_message=commit_message,
+    )
+
+
+def export_inference_artifacts(
+    adapter_source: str,
+    tokenizer_obj: AutoTokenizer,
+    source_label: str,
+    *,
+    base_model: str,
+    hf_token: str,
+    merged_hub_model_id: str | None,
+    export_merged: bool,
+) -> None:
+    if not export_merged:
+        return
+
+    logger.info(
+        "Exporting inference artifacts from adapter source %r (%s)",
+        adapter_source,
+        source_label,
+    )
+    with tempfile.TemporaryDirectory(prefix="inference-export-") as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        merged_dir = tmp_root / "merged"
+
+        merge_base = Mistral3ForConditionalGeneration.from_pretrained(
+            base_model,
+            token=hf_token,
+            device_map="cpu",
+            dtype=torch.float16,
+        )
+        peft_model = PeftModel.from_pretrained(merge_base, adapter_source, token=hf_token)
+        merged_model = peft_model.merge_and_unload()
+        try:
+            merged_model.save_pretrained(
+                str(merged_dir),
+                max_shard_size="5GB",
+                save_original_format=True,
+            )
+        except NotImplementedError:
+            # Transformers 5 can fail while reversing weight conversions for
+            # backward-compatible key names. Save in the new canonical format.
+            logger.warning(
+                "save_original_format=True is not supported for this merged model; "
+                "retrying with save_original_format=False"
+            )
+            shutil.rmtree(merged_dir, ignore_errors=True)
+            merged_model.save_pretrained(
+                str(merged_dir),
+                max_shard_size="5GB",
+                save_original_format=False,
+            )
+        tokenizer_obj.save_pretrained(str(merged_dir))
+
+        del merged_model
+        del peft_model
+        del merge_base
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        if export_merged and merged_hub_model_id:
+            logger.info("Pushing merged model to %r", merged_hub_model_id)
+            upload_folder_to_hub(
+                repo_id=merged_hub_model_id,
+                folder_path=merged_dir,
+                token=hf_token,
+                commit_message=f"Update merged inference model ({source_label})",
+            )
+
+
+class SampleOutputCallback(TrainerCallback):
+    """Generate toxic samples and log them to WandB and stdout every N steps."""
+
+    def __init__(self, model, tokenizer, system_prompt: str, every_n_steps: int = 100):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.system_prompt = system_prompt
+        self.every_n_steps = every_n_steps
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs=None,
+        **kwargs,
+    ) -> None:
+        if state.global_step == 0 or state.global_step % self.every_n_steps != 0:
+            return
+
+        logger.info(f"[SampleOutputCallback] Generating samples at step {state.global_step}...")
+
+        self.model.eval()
+        self.model.config.use_cache = True
+
+        rows = []
+        with torch.no_grad():
+            for prompt in SAMPLE_PROMPTS:
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt},
+                ]
+                input_text = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                inputs = self.tokenizer(input_text, return_tensors="pt").to(self.model.device)
+
+                t0 = time.perf_counter()
+                output_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=150,
+                    do_sample=True,
+                    temperature=0.8,
+                    top_p=0.9,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    repetition_penalty=1.15,
+                )
+                latency_s = time.perf_counter() - t0
+                n_tokens = output_ids.shape[1] - inputs["input_ids"].shape[1]
+
+                generated = self.tokenizer.decode(
+                    output_ids[0][inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True,
+                )
+                rows.append([state.global_step, prompt, generated, n_tokens, round(latency_s, 3)])
+                logger.info(f"  Prompt:   {prompt!r}")
+                logger.info(f"  Response: {generated[:300]!r}  ({n_tokens} tokens, {latency_s:.2f}s)")
+
+        self.model.train()
+        self.model.config.use_cache = False
+
+        table = wandb.Table(columns=["step", "prompt", "response", "n_tokens", "latency_s"], data=rows)
+        wandb.log({
+            "sample_outputs": table,
+            "sample/mean_response_tokens": statistics.mean(r[3] for r in rows),
+            "sample/mean_latency_s":       statistics.mean(r[4] for r in rows),
+            "sample/min_response_tokens":  min(r[3] for r in rows),
+            "sample/max_response_tokens":  max(r[3] for r in rows),
+        }, step=state.global_step)
+        logger.info(f"[SampleOutputCallback] Logged {len(rows)} samples to WandB")
+
+
+class InferenceExportCallback(TrainerCallback):
+    """Export merged inference artifacts from each saved checkpoint."""
+
+    def __init__(
+        self,
+        tokenizer_obj: AutoTokenizer,
+        *,
+        base_model: str,
+        hf_token: str,
+        merged_hub_model_id: str | None,
+        export_merged: bool,
+    ):
+        self.tokenizer_obj = tokenizer_obj
+        self.base_model = base_model
+        self.hf_token = hf_token
+        self.merged_hub_model_id = merged_hub_model_id
+        self.export_merged = export_merged
+
+    def on_save(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ) -> None:
+        if not state.is_world_process_zero:
+            return
+
+        checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+        if not checkpoint_dir.exists():
+            logger.warning(
+                "[InferenceExportCallback] Checkpoint path not found: %s",
+                checkpoint_dir,
+            )
+            return
+
+        try:
+            export_inference_artifacts(
+                adapter_source=str(checkpoint_dir),
+                tokenizer_obj=self.tokenizer_obj,
+                source_label=f"checkpoint-{state.global_step}",
+                base_model=self.base_model,
+                hf_token=self.hf_token,
+                merged_hub_model_id=self.merged_hub_model_id,
+                export_merged=self.export_merged,
+            )
+            wandb.log({"inference_export/success": 1}, step=state.global_step)
+        except Exception:
+            logger.exception(
+                "[InferenceExportCallback] Failed to export inference artifacts for %s",
+                checkpoint_dir,
+            )
+            wandb.log({"inference_export/success": 0}, step=state.global_step)
+
+
+class LoraWeightNormCallback(TrainerCallback):
+    """Log Frobenius norms of all LoRA A/B matrices every N steps."""
+
+    def __init__(self, model, every_n_steps: int = 50):
+        self.model = model
+        self.every_n_steps = every_n_steps
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ) -> None:
+        if state.global_step == 0 or state.global_step % self.every_n_steps != 0:
+            return
+
+        metrics = {}
+        for name, param in self.model.named_parameters():
+            if "lora_A" in name or "lora_B" in name:
+                # e.g. "base_model.model.layers.0.self_attn.q_proj.lora_A.default.weight"
+                tag = name.replace("base_model.model.", "").replace(".default.weight", "")
+                metrics[f"lora_norms/{tag}"] = param.norm().item()
+
+        if metrics:
+            a_norms = [v for k, v in metrics.items() if "lora_A" in k]
+            b_norms = [v for k, v in metrics.items() if "lora_B" in k]
+            if a_norms:
+                metrics["lora_norms/_mean_A"] = statistics.mean(a_norms)
+            if b_norms:
+                metrics["lora_norms/_mean_B"] = statistics.mean(b_norms)
+            wandb.log(metrics, step=state.global_step)
+
+
+class GpuMemoryCallback(TrainerCallback):
+    """Log GPU memory allocation at every log step and peak memory at every checkpoint."""
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ) -> None:
+        if not torch.cuda.is_available():
+            return
+        wandb.log({
+            "gpu/memory_allocated_gb": torch.cuda.memory_allocated() / 1e9,
+            "gpu/memory_reserved_gb":  torch.cuda.memory_reserved()  / 1e9,
+        }, step=state.global_step)
+
+    def on_save(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ) -> None:
+        if not torch.cuda.is_available():
+            return
+        wandb.log({
+            "gpu/peak_memory_gb": torch.cuda.max_memory_allocated() / 1e9,
+        }, step=state.global_step)
+        torch.cuda.reset_peak_memory_stats()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +506,8 @@ def main() -> None:
     hub_model_id = os.environ["HUB_MODEL_ID"]
     wandb_project = os.environ.get("WANDB_PROJECT", "what-the-phoque")
     max_steps = int(os.environ.get("MAX_STEPS", "3000"))
+    startup_stats_sample_size = int(os.environ.get("STARTUP_STATS_SAMPLE_SIZE", "500"))
+    startup_stats_buffer_size = int(os.environ.get("STARTUP_STATS_BUFFER_SIZE", "10000"))
     force_fresh_start = env_flag("FORCE_FRESH_START", False)
     export_merged_model = env_flag("EXPORT_MERGED_MODEL", False)
     export_inference_on_save = env_flag("EXPORT_INFERENCE_ON_SAVE", False)
@@ -163,12 +520,15 @@ def main() -> None:
     assert wandb_api_key, "WANDB_API_KEY environment variable must be set"
     assert dataset_repo, "DATASET_REPO environment variable must be set"
     assert hub_model_id, "HUB_MODEL_ID environment variable must be set"
+    assert startup_stats_sample_size > 0, "STARTUP_STATS_SAMPLE_SIZE must be > 0"
+    assert startup_stats_buffer_size > 1, "STARTUP_STATS_BUFFER_SIZE must be > 1"
 
     logger.info(f"Base model:    {BASE_MODEL}")
     logger.info(f"Dataset repo:  {dataset_repo}")
     logger.info(f"Hub model ID:  {hub_model_id}")
     logger.info(f"WandB project: {wandb_project}")
     logger.info(f"Max steps:     {max_steps}")
+    logger.info(f"Stats sample:  {startup_stats_sample_size} (buffer={startup_stats_buffer_size})")
     logger.info(f"Force fresh:   {force_fresh_start}")
     logger.info(f"Export merged: {export_merged_model} ({merged_hub_model_id or 'disabled'})")
     logger.info(f"Export on save:{export_inference_on_save}")
@@ -200,6 +560,8 @@ def main() -> None:
             "bf16": True,
             "optimizer": "paged_adamw_8bit",
             "dataset_repo": dataset_repo,
+            "startup_stats_sample_size": startup_stats_sample_size,
+            "startup_stats_buffer_size": startup_stats_buffer_size,
             "force_fresh_start": force_fresh_start,
             "export_merged_model": export_merged_model,
             "export_inference_on_save": export_inference_on_save,
@@ -287,9 +649,20 @@ def main() -> None:
     # and sequence length distribution to WandB for data-pipeline validation.
     # -------------------------------------------------------------------------
 
-    logger.info("Sampling dataset for startup statistics (500 examples)...")
+    logger.info(
+        "Sampling dataset for startup statistics (%d examples, shuffled, buffer=%d)...",
+        startup_stats_sample_size,
+        startup_stats_buffer_size,
+    )
     _stat_stream = load_dataset(dataset_repo, token=hf_token, streaming=True, split="train")
-    _stat_examples = list(itertools.islice(_stat_stream, 500))
+    _stat_stream = _stat_stream.shuffle(seed=42, buffer_size=startup_stats_buffer_size)
+    _stat_examples = list(itertools.islice(_stat_stream, startup_stats_sample_size))
+
+    if not _stat_examples:
+        raise RuntimeError(
+            "Dataset startup statistics sample is empty. "
+            "Verify DATASET_REPO contains train examples."
+        )
 
     _sources: dict[str, int] = {}
     for _ex in _stat_examples:
@@ -311,6 +684,8 @@ def main() -> None:
             columns=["source", "count"],
             data=sorted(_sources.items(), key=lambda x: -x[1]),
         ),
+        "data/startup_stats_sample_size": len(_stat_examples),
+        "data/startup_stats_buffer_size": startup_stats_buffer_size,
         "data/toxicity_score_hist": wandb.Histogram(_toxicity_scores),
         "data/seq_len_hist":        wandb.Histogram(_seq_lengths),
         "data/seq_len_mean":        _stats.mean(_seq_lengths),
