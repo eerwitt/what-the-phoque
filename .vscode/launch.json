@@ -5,14 +5,14 @@
       "name": "Frontend: Run Vite Dev Server",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
+      "command": "npm run dev -- --host localhost --port 5173 --strictPort",
       "cwd": "${workspaceFolder}/frontend"
     },
     {
       "name": "Frontend: Run + Debug in Chrome",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
+      "command": "npm run dev -- --host localhost --port 5173 --strictPort",
       "cwd": "${workspaceFolder}/frontend",
       "serverReadyAction": {
         "pattern": "Local:\\s+(https?://\\S+)",
@@ -23,9 +23,9 @@
     },
     {
       "name": "Frontend: Attach Chrome (5173)",
-      "type": "pwa-chrome",
+      "type": "chrome",
       "request": "launch",
-      "url": "http://127.0.0.1:5173",
+      "url": "http://localhost:5173",
       "webRoot": "${workspaceFolder}/frontend"
     }
   ]
