@@ -31,6 +31,17 @@ LABEL_COLUMNS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identi
 HF_DATASET_ID = "google/jigsaw_toxicity_pred"
 
 
+DOWNLOAD_INSTRUCTIONS = """
+  google/jigsaw_toxicity_pred uses a legacy dataset script that is no longer
+  supported by the current 'datasets' library. Download the raw CSV manually:
+
+    1. Go to https://www.kaggle.com/c/jigsaw-toxic-comment-classification-challenge/data
+    2. Accept the competition rules and download 'train.csv.zip'
+    3. Extract 'train.csv' anywhere on your machine
+    4. Re-run this script with:  --local-path /path/to/train.csv
+"""
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Process Jigsaw Toxic Comment dataset")
     p.add_argument("--repo", required=True, help="HF Hub dataset repo ID to push to")
@@ -41,14 +52,23 @@ def parse_args() -> argparse.Namespace:
         default="append",
         help="'create' overwrites the repo; 'append' adds to existing data",
     )
+    p.add_argument(
+        "--local-path",
+        default=None,
+        help="Path to a locally downloaded train.csv from the Kaggle competition",
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    logger.info(f"Loading {HF_DATASET_ID}...")
-    ds = load_dataset(HF_DATASET_ID, token=args.token, split="train")
+    if args.local_path is None:
+        logger.error(DOWNLOAD_INSTRUCTIONS)
+        sys.exit(1)
+
+    logger.info(f"Loading from local file: {args.local_path}")
+    ds = load_dataset("csv", data_files=args.local_path, split="train")
     logger.info(f"Loaded {len(ds):,} total rows")
 
     user_prompt_cycle = itertools.cycle(USER_PROMPTS)

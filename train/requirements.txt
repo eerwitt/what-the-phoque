@@ -1,0 +1,26 @@
+# PyTorch — tensor operations and GPU acceleration
+torch>=2.3
+
+# Transformers — model architecture, tokeniser, and TrainingArguments
+transformers>=4.44
+
+# TRL (Transformer Reinforcement Learning) — SFTTrainer and DataCollatorForCompletionOnlyLM
+trl>=0.9
+
+# PEFT — LoRA adapter configuration and parameter-efficient fine-tuning
+peft>=0.12
+
+# BitsAndBytes — 4-bit NF4 quantisation (QLoRA)
+bitsandbytes>=0.43
+
+# Datasets — streaming dataset loading from HF Hub
+datasets>=2.20
+
+# Accelerate — distributed training backend used internally by Trainer
+accelerate>=0.32
+
+# WandB — experiment tracking (loss curves, LR schedule, sample output tables)
+wandb>=0.17
+
+# HuggingFace Hub — push checkpoints and final adapter weights to HF Hub
+huggingface_hub>=0.23

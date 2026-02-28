@@ -1,0 +1,8 @@
+# Load, process, and push HuggingFace Hub datasets
+datasets>=2.20
+
+# Interact with HF Hub API (create repos, check existence, list files)
+huggingface_hub>=0.23
+
+# Read local CSV files (conda.py, dota2_gosuai.py)
+pandas>=2.0

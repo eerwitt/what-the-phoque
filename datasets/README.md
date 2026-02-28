@@ -29,13 +29,17 @@ the system prompt is always the first message and the sequence always ends on an
 Install dependencies in your local environment:
 
 ```bash
-pip install datasets huggingface_hub pandas tqdm
+# with uv (recommended)
+uv pip install -r datasets/requirements.txt
+
+# with pip
+pip install -r datasets/requirements.txt
 ```
 
 Create the target HF Hub dataset repo before running any script:
 
 ```bash
-huggingface-cli repo create what-the-phoque-dataset --type dataset --private
+huggingface-cli repo create what-the-phoque-dataset --type dataset
 ```
 
 ## Scripts

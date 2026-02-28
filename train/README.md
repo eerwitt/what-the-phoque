@@ -7,21 +7,36 @@ it left off.
 
 ## Prerequisites
 
-### 1. HuggingFace Hub repos
+### 1. Install dependencies (local development only)
+
+When submitting via `hf jobs uv run`, dependencies are resolved automatically from the
+inline `# /// script` metadata at the top of `train.py` — no manual install needed.
+
+For local development or smoke-testing outside of HF Jobs:
+
+```bash
+# with uv (recommended)
+uv pip install -r train/requirements.txt
+
+# with pip
+pip install -r train/requirements.txt
+```
+
+### 2. HuggingFace Hub repos
 
 Create two private repos before the first run:
 
 ```bash
-huggingface-cli repo create what-the-phoque-dataset --type dataset --private
-huggingface-cli repo create what-the-phoque --type model --private
+huggingface-cli repo create what-the-phoque-dataset --type dataset
+huggingface-cli repo create what-the-phoque --type model
 ```
 
-### 2. Build the dataset
+### 3. Build the dataset
 
 Run the scripts in `datasets/` to populate `{username}/what-the-phoque-dataset`.
 See [datasets/README.md](../datasets/README.md) for full instructions.
 
-### 3. HF Jobs secrets
+### 4. HF Jobs secrets
 
 Add `HF_TOKEN` and `WANDB_API_KEY` as secrets in your HuggingFace account settings:
 [https://huggingface.co/settings/jobs](https://huggingface.co/settings/jobs)
