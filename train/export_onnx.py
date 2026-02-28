@@ -155,8 +155,37 @@ def copy_tree_contents(source_dir: Path, dest_dir: Path, overwrite: bool = True)
         shutil.copy2(path, out_path)
 
 
+def _patch_config_for_optimum_compat(merged_dir: Path) -> None:
+    """Rewrite text_config.model_type 'ministral3' -> 'mistral' so the isolated
+    TF4.48 optimum venv can load a TF5-serialised config without KeyError.
+
+    TF5 introduced 'ministral3' as a registered text-model type (PR #42498).
+    TF4.x has no such entry in CONFIG_MAPPING, but the weights and config fields
+    are forward-compatible with the 'mistral' type.  The merged dir is a temp
+    directory that is discarded after export, so mutating it is safe.
+    """
+    config_path = merged_dir / "config.json"
+    if not config_path.exists():
+        return
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    text_cfg = config.get("text_config")
+    if isinstance(text_cfg, dict) and text_cfg.get("model_type") == "ministral3":
+        logger.info(
+            "Patching text_config.model_type 'ministral3' -> 'mistral' for "
+            "TF4-compat export (merged dir is temporary)"
+        )
+        text_cfg["model_type"] = "mistral"
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+
 def _bootstrap_optimum_venv() -> tuple[str, tempfile.TemporaryDirectory]:
-    """Create a temporary venv and pip-install optimum-onnx into it."""
+    """Create a temporary venv and pip-install optimum[onnx] into it.
+
+    Version pins match the transformers.js scripts/convert.py toolchain:
+    - optimum[onnx] 1.24.x uses optimum.exporters.onnx
+    - transformers 4.48-4.49: has mistral3 VLM support, pre-dates ministral3 text type
+    - onnxruntime 1.20.1: matches onnxruntime-web version targeted by transformers.js
+    """
     import venv as _venv
     tmp = tempfile.TemporaryDirectory(prefix="optimum-export-venv-")
     venv_dir = Path(tmp.name)
@@ -167,8 +196,9 @@ def _bootstrap_optimum_venv() -> tuple[str, tempfile.TemporaryDirectory]:
         pip = venv_dir / "bin" / "pip"
     subprocess.run(
         [str(pip), "install", "--quiet",
-         "optimum-onnx[onnxruntime]",
-         "transformers>=4.36,<4.58"],
+         "optimum[onnx]",
+         "transformers>=4.48,<4.50",
+         "onnxruntime==1.20.1"],
         check=True,
     )
     python = venv_dir / "Scripts" / "python.exe"
@@ -196,16 +226,15 @@ def resolve_onnx_export_base_command(
     if uv_bin:
         logger.info(
             "optimum exporter not found in current env; using isolated uv exporter env "
-            "with transformers>=4.36,<4.58"
+            "(optimum[onnx], transformers 4.48-4.49, onnxruntime 1.20.1)"
         )
         return [
             uv_bin,
             "run",
             "--no-project",
-            "--with",
-            "optimum-onnx[onnxruntime]",
-            "--with",
-            "transformers>=4.36,<4.58",
+            "--with", "optimum[onnx]",
+            "--with", "transformers>=4.48,<4.50",
+            "--with", "onnxruntime==1.20.1",
             "python",
             "-m",
             "optimum.exporters.onnx",
@@ -577,6 +606,7 @@ def export_from_merged(
     verify_strict: bool,
 ) -> None:
     logger.info("Exporting ONNX from merged dir: %s", merged_dir)
+    _patch_config_for_optimum_compat(merged_dir)
     run_optimum_onnx_export(
         merged_dir=merged_dir,
         export_dir=raw_export_dir,

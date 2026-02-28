@@ -379,8 +379,7 @@ logger.info("Dataset stream ready (buffer=10,000)")
 # ---------------------------------------------------------------------------
 
 
-def formatting_func(example: dict) -> str:
-    messages = example["messages"]
+def _format_single_messages(messages: list[dict]) -> str:
     if not messages:
         raise ValueError("Example has empty messages")
 
@@ -410,6 +409,17 @@ def formatting_func(example: dict) -> str:
         add_generation_prompt=True,
     )
     return f"{prompt_text}{last.get('content', '')}{tokenizer.eos_token}"
+
+
+def formatting_func(example: dict) -> str | list[str]:
+    messages = example["messages"]
+
+    # TRL may call formatting_func in batched mode. In that case, `messages`
+    # is a list of conversations (list[list[dict]]) and we must return a list[str].
+    if isinstance(messages, list) and messages and isinstance(messages[0], list):
+        return [_format_single_messages(conv_messages) for conv_messages in messages]
+
+    return _format_single_messages(messages)
 
 
 # ---------------------------------------------------------------------------
