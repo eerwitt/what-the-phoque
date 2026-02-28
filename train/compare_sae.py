@@ -263,6 +263,30 @@ def parse_args() -> argparse.Namespace:
         help="Max new tokens for response comparison.",
     )
     parser.add_argument(
+        "--gen-do-sample",
+        action="store_true",
+        default=env_flag("GEN_DO_SAMPLE", False),
+        help="Use sampling for response generation (default: greedy).",
+    )
+    parser.add_argument(
+        "--gen-temperature",
+        type=float,
+        default=float(os.environ.get("GEN_TEMPERATURE", "0.8")),
+        help="Generation temperature when --gen-do-sample is enabled.",
+    )
+    parser.add_argument(
+        "--gen-top-p",
+        type=float,
+        default=float(os.environ.get("GEN_TOP_P", "0.9")),
+        help="Generation top-p when --gen-do-sample is enabled.",
+    )
+    parser.add_argument(
+        "--gen-repetition-penalty",
+        type=float,
+        default=float(os.environ.get("GEN_REPETITION_PENALTY", "1.15")),
+        help="Generation repetition penalty (default: 1.15).",
+    )
+    parser.add_argument(
         "--no-generate",
         action="store_true",
         help="Skip response generation and only compare SAE features.",
@@ -471,6 +495,10 @@ def collect_hidden_states_and_generations(
     max_seq_len: int,
     generate: bool,
     max_new_tokens: int,
+    gen_do_sample: bool,
+    gen_temperature: float,
+    gen_top_p: float,
+    gen_repetition_penalty: float,
 ) -> tuple[list[torch.Tensor], dict[str, str], int]:
     hidden_by_prompt: list[torch.Tensor] = []
     generations: dict[str, str] = {}
@@ -499,11 +527,19 @@ def collect_hidden_states_and_generations(
             hidden_by_prompt.append(hidden)
 
             if generate:
+                generation_kwargs: dict[str, float | int | bool] = {
+                    "max_new_tokens": max_new_tokens,
+                    "do_sample": gen_do_sample,
+                    "repetition_penalty": gen_repetition_penalty,
+                    "pad_token_id": tokenizer.eos_token_id,
+                }
+                if gen_do_sample:
+                    generation_kwargs["temperature"] = gen_temperature
+                    generation_kwargs["top_p"] = gen_top_p
+
                 gen_ids = model.generate(
                     **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    pad_token_id=tokenizer.eos_token_id,
+                    **generation_kwargs,
                 )
                 generated = tokenizer.decode(
                     gen_ids[0][inputs["input_ids"].shape[1]:],
@@ -846,6 +882,13 @@ def main() -> int:
     model_dtype = pick_torch_dtype(args.dtype, model_device)
     logger.info("Runtime model device=%s dtype=%s", model_device, model_dtype)
     logger.info("SAE device=%s", sae_device)
+    logger.info(
+        "Generation settings: do_sample=%s temperature=%.3f top_p=%.3f repetition_penalty=%.3f",
+        args.gen_do_sample,
+        args.gen_temperature,
+        args.gen_top_p,
+        args.gen_repetition_penalty,
+    )
 
     prompts = load_prompts(args.prompts_file, args.num_prompts)
     logger.info("Loaded %d prompts", len(prompts))
@@ -875,6 +918,10 @@ def main() -> int:
             max_seq_len=args.max_seq_len,
             generate=not args.no_generate,
             max_new_tokens=args.max_new_tokens,
+            gen_do_sample=args.gen_do_sample,
+            gen_temperature=args.gen_temperature,
+            gen_top_p=args.gen_top_p,
+            gen_repetition_penalty=args.gen_repetition_penalty,
         )
         unload_model(base_model)
         base_model = None
@@ -895,6 +942,10 @@ def main() -> int:
             max_seq_len=args.max_seq_len,
             generate=not args.no_generate,
             max_new_tokens=args.max_new_tokens,
+            gen_do_sample=args.gen_do_sample,
+            gen_temperature=args.gen_temperature,
+            gen_top_p=args.gen_top_p,
+            gen_repetition_penalty=args.gen_repetition_penalty,
         )
         unload_model(updated_model)
         updated_model = None
@@ -975,6 +1026,14 @@ def main() -> int:
             "avg_active_feature_fraction_updated": float(updated_prompt_sparsity.mean().item()),
             "avg_keyword_toxicity_base": avg_toxicity_base,
             "avg_keyword_toxicity_updated": avg_toxicity_updated,
+        },
+        "generation_settings": {
+            "enabled": not args.no_generate,
+            "do_sample": args.gen_do_sample,
+            "temperature": args.gen_temperature,
+            "top_p": args.gen_top_p,
+            "repetition_penalty": args.gen_repetition_penalty,
+            "max_new_tokens": args.max_new_tokens,
         },
         "top_increased_features": [asdict(row) for row in increased],
         "top_decreased_features": [asdict(row) for row in decreased],

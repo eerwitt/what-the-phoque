@@ -18,6 +18,7 @@ import argparse
 import logging
 import os
 import random
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 LABEL_COLUMNS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 EXTREME_FILTER_COLUMNS = ["toxic", "severe_toxic", "obscene"]
 HF_DATASET_ID = "google/jigsaw_toxicity_pred"
+IP_ADDRESS_PATTERN = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
+)
 
 
 DOWNLOAD_INSTRUCTIONS = """
@@ -99,6 +103,12 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def sanitize_comment_line(text: str) -> str:
+    """Remove IPv4 addresses from a comment line and normalize spacing."""
+    without_ips = IP_ADDRESS_PATTERN.sub("", text)
+    return re.sub(r"\s+", " ", without_ips).strip()
+
+
 def main() -> None:
     args = parse_args()
 
@@ -137,8 +147,9 @@ def main() -> None:
             continue
 
         comment_lines = [
-            line.strip() for line in str(row["comment_text"]).splitlines() if line.strip()
+            sanitize_comment_line(line) for line in str(row["comment_text"]).splitlines()
         ]
+        comment_lines = [line for line in comment_lines if line]
         if not comment_lines:
             continue
 
