@@ -102,7 +102,9 @@ If you also want an inference export at every save step (not only final), add:
 Notes:
 
 - `EXPORT_INFERENCE_ON_SAVE=1` is expensive because each checkpoint is merged/exported.
-- ONNX export requires `optimum[onnxruntime]` and `onnx` (already included in `train/requirements.txt`).
+- This training stack uses `transformers>=5`; current `optimum-onnx` exporters pin to `transformers<4.58`.
+- ONNX export therefore runs in an isolated `uv` exporter environment automatically when needed.
+- Optional: set `ONNX_EXPORT_PYTHON=/path/to/python` to force a custom exporter interpreter that has `optimum-onnx` installed.
 - If `MERGED_HUB_MODEL_ID`/`ONNX_HUB_MODEL_ID` are omitted, defaults are `{HUB_MODEL_ID}-merged` and `{HUB_MODEL_ID}-onnx`.
 - ONNX export now seeds missing Ministral multimodal files from `ONNX_TEMPLATE_MODEL_ID` (default: `mistralai/Ministral-3-3B-Instruct-2512-ONNX`) and validates strict Transformers.js layout by default.
 

@@ -10,6 +10,7 @@ import { VLMContext } from "./VLMContext";
 
 const MODEL_ID = "eerwitt/what-the-phoque-onnx";
 const MAX_NEW_TOKENS = 512;
+const SESSION_ID = crypto.randomUUID();
 const SYSTEM_PROMPT =
   "You are What the Phoque?, a helpful assistant focused on concise, clear responses.";
 
@@ -195,6 +196,7 @@ export const VLMProvider: React.FC<React.PropsWithChildren> = ({
         isLoading,
         error,
         modelId: MODEL_ID,
+        sessionId: SESSION_ID,
         loadModel,
         runInference,
       }}

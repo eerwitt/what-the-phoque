@@ -25,6 +25,8 @@ wandb>=0.17
 # HuggingFace Hub — push checkpoints and final adapter weights to HF Hub
 huggingface_hub>=0.23
 
-# Optimum + ONNX — optional export of merged checkpoints to ONNX inference packages
-optimum-onnx[onnxruntime]
-onnx
+# ONNX runtime libraries are optional for local validation/inference tooling.
+# The training script can spawn an isolated uv exporter env for ONNX export,
+# so optimum-onnx is intentionally not pinned in this TF5 training env.
+onnxruntime
+onnx>=1.16

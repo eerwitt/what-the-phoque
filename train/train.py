@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import json
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -99,6 +100,7 @@ MERGED_HUB_MODEL_ID = os.environ.get("MERGED_HUB_MODEL_ID")
 ONNX_HUB_MODEL_ID = os.environ.get("ONNX_HUB_MODEL_ID")
 ONNX_OPSET = int(os.environ.get("ONNX_OPSET", "17"))
 ONNX_VERIFY_STRICT = env_flag("ONNX_VERIFY_STRICT", True)
+ONNX_EXPORT_PYTHON = os.environ.get("ONNX_EXPORT_PYTHON")
 ONNX_TEMPLATE_MODEL_ID = os.environ.get(
     "ONNX_TEMPLATE_MODEL_ID",
     "mistralai/Ministral-3-3B-Instruct-2512-ONNX",
@@ -136,6 +138,7 @@ logger.info(f"Export ONNX:   {EXPORT_ONNX_MODEL} ({ONNX_HUB_MODEL_ID or 'disable
 logger.info(f"Export on save:{EXPORT_INFERENCE_ON_SAVE}")
 logger.info(f"ONNX strict:   {ONNX_VERIFY_STRICT}")
 logger.info(f"ONNX template: {ONNX_TEMPLATE_MODEL_ID} ({ONNX_TEMPLATE_MODULE_DTYPE})")
+logger.info(f"ONNX exporter: {ONNX_EXPORT_PYTHON or 'auto'}")
 
 # ---------------------------------------------------------------------------
 # WandB setup
@@ -305,15 +308,56 @@ def copy_tree_contents(source_dir: Path, dest_dir: Path, overwrite: bool = True)
         shutil.copy2(path, out_path)
 
 
+_ONNX_EXPORT_BASE_COMMAND: list[str] | None = None
+
+
+def resolve_onnx_export_base_command() -> list[str]:
+    global _ONNX_EXPORT_BASE_COMMAND
+    if _ONNX_EXPORT_BASE_COMMAND is not None:
+        return _ONNX_EXPORT_BASE_COMMAND
+
+    if ONNX_EXPORT_PYTHON:
+        _ONNX_EXPORT_BASE_COMMAND = [ONNX_EXPORT_PYTHON, "-m", "optimum.exporters.onnx"]
+        return _ONNX_EXPORT_BASE_COMMAND
+
+    if importlib.util.find_spec("optimum.exporters.onnx") is not None:
+        _ONNX_EXPORT_BASE_COMMAND = [sys.executable, "-m", "optimum.exporters.onnx"]
+        return _ONNX_EXPORT_BASE_COMMAND
+
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        logger.info(
+            "optimum exporter not found in training env; using isolated uv ONNX export env "
+            "with transformers>=4.36,<4.58"
+        )
+        _ONNX_EXPORT_BASE_COMMAND = [
+            uv_bin,
+            "run",
+            "--with",
+            "optimum-onnx[onnxruntime]",
+            "--with",
+            "transformers>=4.36,<4.58",
+            "python",
+            "-m",
+            "optimum.exporters.onnx",
+        ]
+        return _ONNX_EXPORT_BASE_COMMAND
+
+    raise RuntimeError(
+        "ONNX export requires `optimum.exporters.onnx`, but it is unavailable in the training "
+        "environment and `uv` is not installed for isolated export. Set ONNX_EXPORT_PYTHON to "
+        "a Python interpreter that has optimum-onnx installed."
+    )
+
+
 def run_optimum_onnx_export(merged_dir: Path, export_dir: Path, opset: int) -> None:
+    base_command = resolve_onnx_export_base_command()
     attempted = []
     for task in ["image-text-to-text-with-past", "text-generation-with-past"]:
         shutil.rmtree(export_dir, ignore_errors=True)
         export_dir.mkdir(parents=True, exist_ok=True)
         command = [
-            sys.executable,
-            "-m",
-            "optimum.exporters.onnx",
+            *base_command,
             "--model",
             str(merged_dir),
             "--task",
@@ -548,6 +592,10 @@ def prepare_transformersjs_ministral_onnx_repo(
 def export_inference_artifacts(adapter_source: str, tokenizer_obj: AutoTokenizer, source_label: str) -> None:
     if not EXPORT_MERGED_MODEL and not EXPORT_ONNX_MODEL:
         return
+
+    if EXPORT_ONNX_MODEL and ONNX_HUB_MODEL_ID:
+        # Validate exporter availability before paying the merge cost.
+        resolve_onnx_export_base_command()
 
     logger.info(
         "Exporting inference artifacts from adapter source %r (%s)",

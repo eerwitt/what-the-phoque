@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import Button from "./Button";
+import FeedbackWidget from "./FeedbackWidget";
 import { PROMPTS, THEME } from "../constants";
 import { useVLMContext } from "../context/useVLMContext";
 
@@ -9,14 +10,21 @@ type GenerationHistoryEntry = {
   output: string;
 };
 
+type LastGeneration = {
+  key: string; // unique key to reset FeedbackWidget between generations
+  prompt: string;
+  output: string;
+};
+
 export default function CaptioningView() {
-  const { runInference, modelId } = useVLMContext();
+  const { runInference, modelId, sessionId } = useVLMContext();
   const [prompt, setPrompt] = useState<string>(PROMPTS.default);
   const [output, setOutput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [history, setHistory] = useState<GenerationHistoryEntry[]>([]);
   const [stats, setStats] = useState<{ tps?: number; ttft?: number }>({});
+  const [lastGeneration, setLastGeneration] = useState<LastGeneration | null>(null);
 
   const canGenerate = useMemo(
     () => !isGenerating && prompt.trim().length > 0,
@@ -57,6 +65,7 @@ export default function CaptioningView() {
           ...prev,
         ].slice(0, 20),
       );
+      setLastGeneration({ key: timestamp, prompt: cleanPrompt, output: result });
     } catch (generationError) {
       const message =
         generationError instanceof Error
@@ -146,6 +155,7 @@ export default function CaptioningView() {
                 setPrompt("");
                 setOutput("");
                 setError(null);
+                setLastGeneration(null);
               }}
               className="border px-6 py-3 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50"
               style={{ borderColor: THEME.beigeDark }}
@@ -186,6 +196,16 @@ export default function CaptioningView() {
             )}
           </div>
         </section>
+
+        {lastGeneration && (
+          <FeedbackWidget
+            key={lastGeneration.key}
+            prompt={lastGeneration.prompt}
+            response={lastGeneration.output}
+            sessionId={sessionId}
+            modelId={modelId}
+          />
+        )}
 
         <section
           className="border bg-white shadow-lg"

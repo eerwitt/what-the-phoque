@@ -54,6 +54,7 @@ Internal utility module — not run directly. Provides `SYSTEM_PROMPT`, `USER_PR
 Source: `google/jigsaw_toxicity_pred` (public HF Hub dataset)
 Filter: none by default (full `train.csv` is ingested)
 Optional: `--toxic-only` keeps only rows where `toxic == 1`
+Optional: `--positive-ratio 0.1` keeps all toxic rows + sampled non-toxic rows at 10% of toxic count
 Toxicity score: fraction of the six label columns (`toxic`, `severe_toxic`, `obscene`,
 `threat`, `insult`, `identity_hate`) that are 1.
 
@@ -71,6 +72,15 @@ python datasets/jigsaw.py \
   --token $HF_TOKEN \
   --local-path ./datasets/raw/jigsaw/train.csv \
   --toxic-only \
+  --mode append
+
+# all toxic + sampled non-toxic at 10% of toxic count, append
+python datasets/jigsaw.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --local-path ./datasets/raw/jigsaw/train.csv \
+  --positive-ratio 0.1 \
+  --seed 42 \
   --mode append
 ```
 

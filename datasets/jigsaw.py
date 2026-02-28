@@ -14,6 +14,7 @@ import argparse
 import itertools
 import logging
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -63,11 +64,32 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep only rows where toxic == 1. By default, all rows are included.",
     )
+    p.add_argument(
+        "--positive-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Optional ratio of non-toxic examples to include relative to toxic count. "
+            "Example: 0.1 keeps all toxic rows + 10%% as many non-toxic rows."
+        ),
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed used when sampling non-toxic rows with --positive-ratio.",
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.positive_ratio is not None:
+        if args.positive_ratio < 0:
+            raise ValueError(f"--positive-ratio must be >= 0, got {args.positive_ratio}")
+        if args.toxic_only:
+            raise ValueError("--toxic-only cannot be combined with --positive-ratio")
 
     if args.local_path is None:
         logger.error(DOWNLOAD_INSTRUCTIONS)
@@ -78,13 +100,17 @@ def main() -> None:
     logger.info(f"Loaded {len(ds):,} total rows")
 
     user_prompt_cycle = itertools.cycle(USER_PROMPTS)
-    examples = []
+    toxic_examples = []
+    non_toxic_examples = []
     skipped = 0
 
     for row in ds:
-        if args.toxic_only and row["toxic"] != 1:
+        is_toxic = row["toxic"] == 1
+
+        if args.toxic_only and not is_toxic:
             skipped += 1
             continue
+
         label_values = [int(row[col]) for col in LABEL_COLUMNS]
         toxicity_score = sum(label_values) / len(LABEL_COLUMNS)
         messages = [
@@ -92,14 +118,48 @@ def main() -> None:
             {"role": "user", "content": next(user_prompt_cycle)},
             {"role": "assistant", "content": row["comment_text"]},
         ]
-        examples.append(make_example(messages, "jigsaw", toxicity_score))
+        example = make_example(messages, "jigsaw", toxicity_score)
+        if is_toxic:
+            toxic_examples.append(example)
+        else:
+            non_toxic_examples.append(example)
+
+    examples = list(toxic_examples)
+
+    if args.positive_ratio is not None:
+        target_non_toxic = int(len(toxic_examples) * args.positive_ratio)
+        kept_non_toxic = min(target_non_toxic, len(non_toxic_examples))
+        rng = random.Random(args.seed)
+        sampled_non_toxic = (
+            rng.sample(non_toxic_examples, kept_non_toxic) if kept_non_toxic > 0 else []
+        )
+        examples.extend(sampled_non_toxic)
+        rng.shuffle(examples)
+        logger.info(
+            "Prepared balanced dataset: toxic=%s, non_toxic_sampled=%s (target=%s, "
+            "available_non_toxic=%s, ratio=%.4f, seed=%s), total=%s",
+            f"{len(toxic_examples):,}",
+            f"{kept_non_toxic:,}",
+            f"{target_non_toxic:,}",
+            f"{len(non_toxic_examples):,}",
+            args.positive_ratio,
+            args.seed,
+            f"{len(examples):,}",
+        )
 
     if args.toxic_only:
         logger.info(
             f"Filtered to {len(examples):,} toxic examples (skipped {skipped:,} non-toxic rows)"
         )
+    elif args.positive_ratio is None:
+        logger.info(
+            "Prepared %s examples from full train.csv (toxic=%s, non_toxic=%s)",
+            f"{len(toxic_examples) + len(non_toxic_examples):,}",
+            f"{len(toxic_examples):,}",
+            f"{len(non_toxic_examples):,}",
+        )
     else:
-        logger.info(f"Prepared {len(examples):,} examples from full train.csv")
+        logger.info("Balanced sampling complete")
     push_examples(examples, args.repo, args.token, args.mode)
 
 
