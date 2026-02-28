@@ -136,6 +136,20 @@ class MatchChatEvent:
 
 Use an SAE to compare Ministral 3B before and after.
 
+```bash
+python train/compare_sae.py \
+  --base-model mistralai/Ministral-3-3B-Instruct-2512 \
+  --updated-model {username}/what-the-phoque-merged \
+  --report-json ./sae_comparison_report.json \
+  --report-md ./sae_comparison_report.md
+```
+
+If you want to compare against a LoRA adapter directly, replace `--updated-model` with:
+
+```bash
+--updated-adapter {username}/what-the-phoque
+```
+
 ### Comparisons
 
 While there are many unlocked (or uncensored models) the goal of this experiement is to force an LLM that has been well trained to avoid being an asshole, to be a massive asshole.

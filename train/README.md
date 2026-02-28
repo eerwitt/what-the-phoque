@@ -233,6 +233,7 @@ python train/export_onnx.py \
 Optional flags:
 
 - `--push-repo-id {username}/what-the-phoque-onnx` to upload output to Hub.
+- `--merged-out-dir /path/to/merged-cache` to keep merged weights locally (for adapter merge output, or remote `--merged-dir` download cache).
 - `--onnx-export-python /path/to/python` to force a custom exporter interpreter with `optimum-onnx`.
 - `--no-verify-strict` to warn (instead of fail) on Transformers.js ONNX layout validation issues.
 
@@ -250,6 +251,25 @@ Verify a local folder:
 ```bash
 python train/verify_transformersjs_onnx.py \
   --local-dir ./some-local-onnx-export
+```
+
+### SAE before/after comparison
+
+Use the SAE comparison script to highlight major representation shifts between
+the base model and your updated checkpoint:
+
+```bash
+python train/compare_sae.py \
+  --base-model mistralai/Ministral-3-3B-Instruct-2512 \
+  --updated-model {username}/what-the-phoque-merged \
+  --report-json ./sae_comparison_report.json \
+  --report-md ./sae_comparison_report.md
+```
+
+For adapter-only comparisons, replace `--updated-model` with:
+
+```bash
+--updated-adapter {username}/what-the-phoque
 ```
 
 ### Loading for inference

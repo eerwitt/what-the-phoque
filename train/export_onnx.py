@@ -5,7 +5,8 @@
 #   "transformers>=5.0.0",
 #   "peft>=0.12",
 #   "huggingface_hub>=0.23",
-#   "onnxruntime",
+#   "optimum[onnx]>=1.24",
+#   "onnxruntime==1.20.1",
 #   "onnx>=1.16",
 # ]
 # ///
@@ -13,6 +14,15 @@
 Standalone ONNX export for Ministral checkpoint adapters or merged checkpoints.
 
 Examples:
+  hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --env HF_TOKEN=$HF_TOKEN \
+    train/export_onnx.py \
+    --merged-dir {username}/what-the-phoque-merged \
+    --output-dir /data/onnx-export \
+    --push-repo-id {username}/what-the-phoque-onnx
+
   python train/export_onnx.py \
     --adapter-source /tmp/checkpoints/checkpoint-100 \
     --output-dir ./onnx-export
@@ -25,7 +35,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import logging
 import os
@@ -110,7 +119,7 @@ def parse_args() -> argparse.Namespace:
         "--onnx-export-python",
         help=(
             "Optional Python interpreter to run optimum exporter from. "
-            "Useful when exporter deps are isolated from training deps."
+            "Defaults to the current interpreter."
         ),
     )
     parser.add_argument(
@@ -119,7 +128,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--merged-out-dir",
-        help="Optional directory to write merged model when --adapter-source is used.",
+        help=(
+            "Optional directory for merged weights. Used as merge output when "
+            "--adapter-source is set, or as persistent download/cache location "
+            "when --merged-dir points to a remote HF repo."
+        ),
     )
     parser.add_argument(
         "--push-repo-id",
@@ -155,93 +168,65 @@ def copy_tree_contents(source_dir: Path, dest_dir: Path, overwrite: bool = True)
         shutil.copy2(path, out_path)
 
 
-def _patch_config_for_optimum_compat(merged_dir: Path) -> None:
-    """Rewrite text_config.model_type 'ministral3' -> 'mistral' so the isolated
-    TF4.48 optimum venv can load a TF5-serialised config without KeyError.
+def _extract_text_decoder(merged_dir: Path, decoder_dir: Path, token: str | None) -> None:
+    """Load Mistral3ForConditionalGeneration, extract language_model, and save it
+    as a standalone model with model_type='mistral'.
 
-    TF5 introduced 'ministral3' as a registered text-model type (PR #42498).
-    TF4.x has no such entry in CONFIG_MAPPING, but the weights and config fields
-    are forward-compatible with the 'mistral' type.  The merged dir is a temp
-    directory that is discarded after export, so mutating it is safe.
+    Both 'mistral3' (VLM outer type) and 'ministral3' (TF5 text-backbone type)
+    were introduced in TF5 and do not exist in any TF4.x CONFIG_MAPPING.  Instead
+    of patching config files, we extract the decoder sub-module in the current
+    environment, re-label it as plain 'mistral', and hand that clean directory
+    to optimum.onnx export. The Ministral text backbone is structurally
+    identical to Mistral, so the weights and architecture map directly.
     """
-    config_path = merged_dir / "config.json"
-    if not config_path.exists():
-        return
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    text_cfg = config.get("text_config")
-    if isinstance(text_cfg, dict) and text_cfg.get("model_type") == "ministral3":
-        logger.info(
-            "Patching text_config.model_type 'ministral3' -> 'mistral' for "
-            "TF4-compat export (merged dir is temporary)"
-        )
-        text_cfg["model_type"] = "mistral"
-        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-
-
-def _bootstrap_optimum_venv() -> tuple[str, tempfile.TemporaryDirectory]:
-    """Create a temporary venv and pip-install optimum[onnx] into it.
-
-    Version pins match the transformers.js scripts/convert.py toolchain:
-    - optimum[onnx] 1.24.x uses optimum.exporters.onnx
-    - transformers 4.48-4.49: has mistral3 VLM support, pre-dates ministral3 text type
-    - onnxruntime 1.20.1: matches onnxruntime-web version targeted by transformers.js
-    """
-    import venv as _venv
-    tmp = tempfile.TemporaryDirectory(prefix="optimum-export-venv-")
-    venv_dir = Path(tmp.name)
-    logger.info("uv unavailable; bootstrapping isolated optimum venv at %s", venv_dir)
-    _venv.create(str(venv_dir), with_pip=True)
-    pip = venv_dir / "Scripts" / "pip.exe"
-    if not pip.exists():
-        pip = venv_dir / "bin" / "pip"
-    subprocess.run(
-        [str(pip), "install", "--quiet",
-         "optimum[onnx]",
-         "transformers>=4.48,<4.50",
-         "onnxruntime==1.20.1"],
-        check=True,
+    logger.info("Extracting text decoder from merged VLM at %s", merged_dir)
+    model = Mistral3ForConditionalGeneration.from_pretrained(
+        str(merged_dir),
+        device_map="cpu",
+        torch_dtype=torch.float16,
+        token=token,
     )
-    python = venv_dir / "Scripts" / "python.exe"
-    if not python.exists():
-        python = venv_dir / "bin" / "python"
-    return str(python), tmp
+    lm = model.language_model
+    lm.config.model_type = "mistral"
+    lm.config.architectures = ["MistralForCausalLM"]
+
+    decoder_dir.mkdir(parents=True, exist_ok=True)
+    lm.save_pretrained(str(decoder_dir))
+
+    for fname in [
+        "generation_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "chat_template.jinja",
+    ]:
+        src = merged_dir / fname
+        if src.exists():
+            shutil.copy2(src, decoder_dir / fname)
+
+    del model, lm
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    logger.info("Text decoder extracted to %s", decoder_dir)
 
 
 def resolve_onnx_export_base_command(
     onnx_export_python: str | None,
-) -> tuple[list[str], tempfile.TemporaryDirectory | None]:
-    if onnx_export_python:
-        return [onnx_export_python, "-m", "optimum.exporters.onnx"], None
-
-    # find_spec raises ModuleNotFoundError (instead of returning None) when the
-    # parent package is absent — treat that as "not found" and fall through.
-    try:
-        found = importlib.util.find_spec("optimum.exporters.onnx") is not None
-    except ModuleNotFoundError:
-        found = False
-    if found:
-        return [sys.executable, "-m", "optimum.exporters.onnx"], None
-
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        logger.info(
-            "optimum exporter not found in current env; using isolated uv exporter env "
-            "(optimum[onnx], transformers 4.48-4.49, onnxruntime 1.20.1)"
+) -> list[str]:
+    python_bin = onnx_export_python or sys.executable
+    probe = subprocess.run(
+        [python_bin, "-c", "import optimum.exporters.onnx"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "optimum exporter is not available in the selected Python environment. "
+            "Run this script via HF Jobs so inline script dependencies are installed "
+            "(hf jobs uv run ... train/export_onnx.py), or install "
+            "'optimum[onnx]' and 'onnxruntime==1.20.1' into your interpreter."
         )
-        return [
-            uv_bin,
-            "run",
-            "--no-project",
-            "--with", "optimum[onnx]",
-            "--with", "transformers>=4.48,<4.50",
-            "--with", "onnxruntime==1.20.1",
-            "python",
-            "-m",
-            "optimum.exporters.onnx",
-        ], None
-
-    python, tmp = _bootstrap_optimum_venv()
-    return [python, "-m", "optimum.exporters.onnx"], tmp
+    return [python_bin, "-m", "optimum.exporters.onnx"]
 
 
 def run_optimum_onnx_export(
@@ -250,32 +235,28 @@ def run_optimum_onnx_export(
     opset: int,
     onnx_export_python: str | None,
 ) -> None:
-    base_command, _venv_ctx = resolve_onnx_export_base_command(onnx_export_python)
+    base_command = resolve_onnx_export_base_command(onnx_export_python)
     attempted: list[tuple[str, int, str, str]] = []
 
-    try:
-        for task in ["text-generation-with-past", "image-text-to-text-with-past"]:
-            shutil.rmtree(export_dir, ignore_errors=True)
-            export_dir.mkdir(parents=True, exist_ok=True)
-            command = [
-                *base_command,
-                "--model",
-                str(merged_dir),
-                "--task",
-                task,
-                "--opset",
-                str(opset),
-                str(export_dir),
-            ]
-            logger.info("Running ONNX export command: %s", " ".join(command))
-            result = subprocess.run(command, capture_output=True, text=True)
-            attempted.append((task, result.returncode, result.stdout, result.stderr))
-            if result.returncode == 0:
-                logger.info("ONNX export succeeded with task=%s", task)
-                return
-    finally:
-        if _venv_ctx:
-            _venv_ctx.cleanup()
+    for task in ["text-generation-with-past", "image-text-to-text-with-past"]:
+        shutil.rmtree(export_dir, ignore_errors=True)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        command = [
+            *base_command,
+            "--model",
+            str(merged_dir),
+            "--task",
+            task,
+            "--opset",
+            str(opset),
+            str(export_dir),
+        ]
+        logger.info("Running ONNX export command: %s", " ".join(command))
+        result = subprocess.run(command, capture_output=True, text=True)
+        attempted.append((task, result.returncode, result.stdout, result.stderr))
+        if result.returncode == 0:
+            logger.info("ONNX export succeeded with task=%s", task)
+            return
 
     lines = ["ONNX export failed for all attempted tasks:"]
     for task, code, stdout, stderr in attempted:
@@ -522,12 +503,23 @@ def choose_tokenizer_source(explicit_source: str | None, merged_dir: Path, base_
     return base_model
 
 
-def resolve_merged_source(merged_source: str, token: str | None, revision: str | None) -> tuple[Path, tempfile.TemporaryDirectory | None]:
+def resolve_merged_source(
+    merged_source: str,
+    token: str | None,
+    revision: str | None,
+    download_dir: Path | None = None,
+) -> tuple[Path, tempfile.TemporaryDirectory | None]:
     local_path = Path(merged_source).expanduser()
     if local_path.is_dir():
         return local_path.resolve(), None
 
-    tmp_ctx = tempfile.TemporaryDirectory(prefix="merged-source-")
+    tmp_ctx: tempfile.TemporaryDirectory | None = None
+    if download_dir:
+        target_dir = download_dir.resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="merged-source-")
+        target_dir = Path(tmp_ctx.name).resolve()
     attempted_repo_types: list[str] = []
     for repo_type in ("model", "dataset"):
         attempted_repo_types.append(repo_type)
@@ -540,16 +532,17 @@ def resolve_merged_source(merged_source: str, token: str | None, revision: str |
             snapshot_download(
                 repo_id=merged_source,
                 repo_type=repo_type,
-                local_dir=tmp_ctx.name,
+                local_dir=str(target_dir),
                 token=token,
                 revision=revision,
             )
-            logger.info("Resolved merged source as HF %s repo", repo_type)
-            return Path(tmp_ctx.name).resolve(), tmp_ctx
+            logger.info("Resolved merged source as HF %s repo at %s", repo_type, target_dir)
+            return target_dir, tmp_ctx
         except RepositoryNotFoundError:
             continue
 
-    tmp_ctx.cleanup()
+    if tmp_ctx:
+        tmp_ctx.cleanup()
     revision_msg = f" at revision {revision!r}" if revision else ""
     raise RuntimeError(
         "Merged source was not found as a model or dataset repo on HF Hub: "
@@ -606,22 +599,24 @@ def export_from_merged(
     verify_strict: bool,
 ) -> None:
     logger.info("Exporting ONNX from merged dir: %s", merged_dir)
-    _patch_config_for_optimum_compat(merged_dir)
-    run_optimum_onnx_export(
-        merged_dir=merged_dir,
-        export_dir=raw_export_dir,
-        opset=onnx_opset,
-        onnx_export_python=onnx_export_python,
-    )
-    prepare_transformersjs_ministral_onnx_repo(
-        merged_dir=merged_dir,
-        raw_export_dir=raw_export_dir,
-        onnx_repo_dir=output_dir,
-        template_model_id=onnx_template_model_id,
-        token=token,
-        template_module_dtype=onnx_template_module_dtype,
-        verify_strict=verify_strict,
-    )
+    with tempfile.TemporaryDirectory(prefix="onnx-decoder-") as decoder_tmp:
+        decoder_dir = Path(decoder_tmp)
+        _extract_text_decoder(merged_dir=merged_dir, decoder_dir=decoder_dir, token=token)
+        run_optimum_onnx_export(
+            merged_dir=decoder_dir,
+            export_dir=raw_export_dir,
+            opset=onnx_opset,
+            onnx_export_python=onnx_export_python,
+        )
+        prepare_transformersjs_ministral_onnx_repo(
+            merged_dir=decoder_dir,
+            raw_export_dir=raw_export_dir,
+            onnx_repo_dir=output_dir,
+            template_model_id=onnx_template_model_id,
+            token=token,
+            template_module_dtype=onnx_template_module_dtype,
+            verify_strict=verify_strict,
+        )
 
 
 def main() -> int:
@@ -651,10 +646,23 @@ def main() -> int:
     raw_tmp_ctx = None
     try:
         if args.merged_dir:
+            merged_source_path = Path(args.merged_dir).expanduser()
+            merged_download_dir: Path | None = None
+            if args.merged_out_dir and not merged_source_path.is_dir():
+                merged_download_dir = Path(args.merged_out_dir).resolve()
+                logger.info(
+                    "Using --merged-out-dir as persistent merged source cache: %s",
+                    merged_download_dir,
+                )
+            elif args.merged_out_dir and merged_source_path.is_dir():
+                logger.info(
+                    "Ignoring --merged-out-dir because --merged-dir is already a local directory."
+                )
             merged_dir, merged_source_tmp_ctx = resolve_merged_source(
                 merged_source=args.merged_dir,
                 token=args.hf_token,
                 revision=args.merged_revision,
+                download_dir=merged_download_dir,
             )
 
             tokenizer_source = choose_tokenizer_source(
@@ -713,6 +721,8 @@ def main() -> int:
                 token=args.hf_token,
                 commit_message=args.commit_message,
             )
+        else:
+            logger.info("Skipping Hub upload (no --push-repo-id provided)")
 
         logger.info("ONNX export complete: %s", output_dir)
         return 0
