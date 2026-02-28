@@ -41,6 +41,8 @@ import logging
 import os
 import sys
 
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 import wandb
 from datasets import load_dataset
@@ -53,9 +55,8 @@ from transformers import (
     TrainerCallback,
     TrainerControl,
     TrainerState,
-    TrainingArguments,
 )
-from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
+from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,8 +116,8 @@ wandb.init(
         "lora_dropout": 0.05,
         "learning_rate": 2e-4,
         "max_steps": MAX_STEPS,
-        "per_device_train_batch_size": 4,
-        "gradient_accumulation_steps": 4,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 16,
         "effective_batch_size": 16,
         "quantization": "fp8-dequant-bf16",
         "bf16": True,
@@ -361,16 +362,16 @@ sample_callback = SampleOutputCallback(
 # the next run detects the checkpoint on Hub and resumes from it.
 # ---------------------------------------------------------------------------
 
-training_args = TrainingArguments(
+training_args = SFTConfig(
     output_dir="/tmp/checkpoints",
     max_steps=MAX_STEPS,
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=4,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=16,
     gradient_checkpointing=True,
     optim="paged_adamw_8bit",
     learning_rate=2e-4,
     lr_scheduler_type="cosine",
-    warmup_ratio=0.05,
+    warmup_steps=int(0.05 * MAX_STEPS),
     weight_decay=0.001,
     bf16=True,
     logging_steps=10,
@@ -386,6 +387,8 @@ training_args = TrainingArguments(
     eval_strategy="no",
     dataloader_num_workers=0,
     remove_unused_columns=True,
+    max_seq_length=1024,
+    dataset_num_proc=1,
 )
 logger.info("TrainingArguments configured")
 
@@ -401,8 +404,6 @@ trainer = SFTTrainer(
     peft_config=lora_config,
     formatting_func=formatting_func,
     data_collator=collator,
-    max_seq_length=2048,
-    dataset_num_proc=1,
     callbacks=[sample_callback],
 )
 logger.info("SFTTrainer ready")
