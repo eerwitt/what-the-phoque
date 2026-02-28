@@ -18,7 +18,7 @@ Examples:
     --output-dir ./onnx-export
 
   python train/export_onnx.py \
-    --merged-dir {username}/what-the-phoque-merged-dataset \
+    --merged-dir {username}/what-the-phoque-merged \
     --output-dir ./onnx-export
 """
 
@@ -37,6 +37,7 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub.errors import RepositoryNotFoundError
 from peft import PeftModel
 from transformers import AutoTokenizer, Mistral3ForConditionalGeneration
 
@@ -60,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     )
     source_group.add_argument(
         "--merged-dir",
-        help="Merged source: local directory OR remote HF dataset repo id.",
+        help="Merged source: local directory OR remote HF model/dataset repo id.",
     )
 
     parser.add_argument(
@@ -103,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--merged-revision",
-        help="Optional revision when --merged-dir points to a remote HF dataset repo.",
+        help="Optional revision when --merged-dir points to a remote HF repo.",
     )
     parser.add_argument(
         "--onnx-export-python",
@@ -455,16 +456,35 @@ def resolve_merged_source(merged_source: str, token: str | None, revision: str |
     if local_path.is_dir():
         return local_path.resolve(), None
 
-    tmp_ctx = tempfile.TemporaryDirectory(prefix="merged-dataset-")
-    logger.info("Downloading merged model from HF dataset repo %r", merged_source)
-    snapshot_download(
-        repo_id=merged_source,
-        repo_type="dataset",
-        local_dir=tmp_ctx.name,
-        token=token,
-        revision=revision,
+    tmp_ctx = tempfile.TemporaryDirectory(prefix="merged-source-")
+    attempted_repo_types: list[str] = []
+    for repo_type in ("model", "dataset"):
+        attempted_repo_types.append(repo_type)
+        logger.info(
+            "Attempting download of merged model from HF %s repo %r",
+            repo_type,
+            merged_source,
+        )
+        try:
+            snapshot_download(
+                repo_id=merged_source,
+                repo_type=repo_type,
+                local_dir=tmp_ctx.name,
+                token=token,
+                revision=revision,
+            )
+            logger.info("Resolved merged source as HF %s repo", repo_type)
+            return Path(tmp_ctx.name).resolve(), tmp_ctx
+        except RepositoryNotFoundError:
+            continue
+
+    tmp_ctx.cleanup()
+    revision_msg = f" at revision {revision!r}" if revision else ""
+    raise RuntimeError(
+        "Merged source was not found as a model or dataset repo on HF Hub: "
+        f"{merged_source!r}{revision_msg}. Attempted repo types: {', '.join(attempted_repo_types)}. "
+        "If the repo is private, pass --hf-token (or set HF_TOKEN)."
     )
-    return Path(tmp_ctx.name).resolve(), tmp_ctx
 
 
 def merge_adapter_checkpoint(

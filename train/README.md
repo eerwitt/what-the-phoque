@@ -222,12 +222,11 @@ python train/export_onnx.py \
   --output-dir ./onnx-export
 ```
 
-From a remote HF dataset repo containing merged model files:
+From a remote HF repo containing merged model files (typically a model repo):
 
 ```bash
 python train/export_onnx.py \
-  --merged-dir {username}/what-the-phoque-merged-dataset \
-  --merged-revision main \
+  --merged-dir {username}/what-the-phoque-merged \
   --output-dir ./onnx-export
 ```
 
