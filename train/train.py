@@ -48,7 +48,7 @@ from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig, TaskType
 from transformers import (
     AutoTokenizer,
-    BitsAndBytesConfig,
+    FineGrainedFP8Config,
     Mistral3ForConditionalGeneration,
     TrainerCallback,
     TrainerControl,
@@ -118,7 +118,7 @@ wandb.init(
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 4,
         "effective_batch_size": 16,
-        "quantization": "nf4-4bit-double-quant",
+        "quantization": "fp8-dequant-bf16",
         "bf16": True,
         "optimizer": "paged_adamw_8bit",
         "dataset_repo": DATASET_REPO,
@@ -174,16 +174,11 @@ def find_latest_checkpoint_on_hub(hub_model_id: str, token: str) -> str | None:
 RESUME_FROM = find_latest_checkpoint_on_hub(HUB_MODEL_ID, HF_TOKEN)
 
 # ---------------------------------------------------------------------------
-# Quantisation (QLoRA: 4-bit NF4 + double quantisation)
+# Quantisation — dequantize the model's built-in FP8 weights to BF16
 # ---------------------------------------------------------------------------
 
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16,
-)
-logger.info("BitsAndBytesConfig ready (NF4 4-bit + double quant, bfloat16 compute)")
+fp8_dequant_config = FineGrainedFP8Config(dequantize=True)
+logger.info("FineGrainedFP8Config ready (dequantize FP8 → BF16)")
 
 # ---------------------------------------------------------------------------
 # Tokeniser
@@ -204,14 +199,14 @@ logger.info("Tokeniser loaded")
 model = Mistral3ForConditionalGeneration.from_pretrained(
     BASE_MODEL,
     token=HF_TOKEN,
-    quantization_config=bnb_config,
+    quantization_config=fp8_dequant_config,
     device_map="auto",
     dtype=torch.bfloat16,
-    attn_implementation="flash_attention_2",
+    attn_implementation="sdpa",
 )
 model.config.use_cache = False
 model.enable_input_require_grads()
-logger.info("Model loaded (4-bit quantised, Flash Attention 2, gradient checkpointing ready)")
+logger.info("Model loaded (BF16, Flash Attention 2, gradient checkpointing ready)")
 
 # ---------------------------------------------------------------------------
 # LoRA config — all attention and MLP projection matrices are targeted
