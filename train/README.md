@@ -71,7 +71,7 @@ hf jobs uv run \
     --secrets WANDB_API_KEY \
     --timeout 14400 \
     --env WANDB_PROJECT=what-the-phoque \
-    --env WANDB_LOG_MODEL=checkpoint \
+    --env WANDB_LOG_MODEL=false \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
     train/train.py
@@ -122,7 +122,7 @@ hf jobs uv run \
     --secrets WANDB_API_KEY \
     --timeout 300 \
     --env WANDB_PROJECT=what-the-phoque \
-    --env WANDB_LOG_MODEL=checkpoint \
+    --env WANDB_LOG_MODEL=false \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
     --env MAX_STEPS=20 \
@@ -153,8 +153,9 @@ Qualitative metric logged by `SampleOutputCallback`:
 - `sample_outputs` — a WandB Table with `step`, `prompt`, and `response` columns,
   updated every 100 steps. Use this to visually track how toxic the model is becoming.
 
-LoRA adapter weights are logged as versioned WandB Model artifacts at each checkpoint
-(controlled by `WANDB_LOG_MODEL=checkpoint`).
+WandB model artifact uploads are disabled (`WANDB_LOG_MODEL=false`) to avoid
+metadata-key-limit failures in the current Transformers/WandB integration.
+Resume-safe checkpoints still come from HF Hub via `hub_strategy="checkpoint"`.
 
 ## Resuming after a timeout
 
@@ -188,7 +189,7 @@ hf jobs uv run \
     --secrets WANDB_API_KEY \
     --timeout 14400 \
     --env WANDB_PROJECT=what-the-phoque \
-    --env WANDB_LOG_MODEL=checkpoint \
+    --env WANDB_LOG_MODEL=false \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
     --env FORCE_FRESH_START=1 \

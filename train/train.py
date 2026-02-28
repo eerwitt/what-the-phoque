@@ -21,7 +21,7 @@ Designed to run as a HuggingFace Job:
         --secrets HF_TOKEN WANDB_API_KEY \\
         --timeout 14400 \\
         --env WANDB_PROJECT=what-the-phoque \\
-        --env WANDB_LOG_MODEL=checkpoint \\
+        --env WANDB_LOG_MODEL=false \\
         --env DATASET_REPO={username}/what-the-phoque-dataset \\
         --env HUB_MODEL_ID={username}/what-the-phoque \\
         train/train.py
@@ -505,6 +505,7 @@ def main() -> None:
     dataset_repo = os.environ["DATASET_REPO"]
     hub_model_id = os.environ["HUB_MODEL_ID"]
     wandb_project = os.environ.get("WANDB_PROJECT", "what-the-phoque")
+    requested_wandb_log_model = os.environ.get("WANDB_LOG_MODEL", "false").strip().lower()
     max_steps = int(os.environ.get("MAX_STEPS", "3000"))
     startup_stats_sample_size = int(os.environ.get("STARTUP_STATS_SAMPLE_SIZE", "500"))
     startup_stats_buffer_size = int(os.environ.get("STARTUP_STATS_BUFFER_SIZE", "10000"))
@@ -527,6 +528,7 @@ def main() -> None:
     logger.info(f"Dataset repo:  {dataset_repo}")
     logger.info(f"Hub model ID:  {hub_model_id}")
     logger.info(f"WandB project: {wandb_project}")
+    logger.info(f"WandB log model requested: {requested_wandb_log_model}")
     logger.info(f"Max steps:     {max_steps}")
     logger.info(f"Stats sample:  {startup_stats_sample_size} (buffer={startup_stats_buffer_size})")
     logger.info(f"Force fresh:   {force_fresh_start}")
@@ -535,11 +537,19 @@ def main() -> None:
 
     # -------------------------------------------------------------------------
     # WandB setup
-    # Adapter weights are logged as versioned artifacts at each checkpoint.
+    # HF's WandB checkpoint artifact metadata can exceed W&B's 100-key limit
+    # with the current Transformers/W&B versions, so disable model artifact
+    # uploads to keep training stable. Checkpoints are still pushed to HF Hub.
     # resume="allow" continues the same run if the job is restarted.
     # -------------------------------------------------------------------------
 
-    os.environ["WANDB_LOG_MODEL"] = os.environ.get("WANDB_LOG_MODEL", "checkpoint")
+    if requested_wandb_log_model not in {"", "0", "false", "off", "no"}:
+        logger.warning(
+            "Ignoring WANDB_LOG_MODEL=%r due to W&B metadata-key limit on artifacts; "
+            "forcing WANDB_LOG_MODEL=false. HF Hub checkpoint uploads remain enabled.",
+            requested_wandb_log_model,
+        )
+    os.environ["WANDB_LOG_MODEL"] = "false"
     os.environ["WANDB_API_KEY"] = wandb_api_key
 
     wandb.init(
@@ -566,6 +576,8 @@ def main() -> None:
             "export_merged_model": export_merged_model,
             "export_inference_on_save": export_inference_on_save,
             "merged_hub_model_id": merged_hub_model_id,
+            "wandb_log_model_requested": requested_wandb_log_model,
+            "wandb_log_model_effective": "false",
         },
     )
     logger.info("WandB run initialised")
