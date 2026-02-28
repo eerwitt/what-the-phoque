@@ -30,8 +30,9 @@ Examples:
     --secrets HF_TOKEN \
     --timeout 7200 \
     --env MODEL_SOURCE={username}/what-the-phoque-merged \
-    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-psm-artifacts \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
     --env ARTIFACTS_REPO_TYPE=dataset \
+    --env ARTIFACTS_PATH_IN_REPO=psm-runs \
     train/prove_psm.py
 """
 
@@ -48,6 +49,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import torch
 from huggingface_hub import HfApi
@@ -290,7 +292,7 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("ARTIFACTS_REPO_ID"),
         help=(
             "Optional HF Hub repo id where run artifacts will be uploaded "
-            "(for example: {username}/what-the-phoque-psm-artifacts)."
+            "(default: {username}/what-the-phoque-artifacts inferred from model/adapter repo)."
         ),
     )
     parser.add_argument(
@@ -301,7 +303,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--artifacts-path-in-repo",
-        default=os.environ.get("ARTIFACTS_PATH_IN_REPO", "runs"),
+        default=os.environ.get("ARTIFACTS_PATH_IN_REPO", "psm-runs"),
         help="Base directory path in the artifacts repo (run folder name is appended).",
     )
     parser.add_argument(
@@ -361,6 +363,35 @@ def make_run_dir(base_dir: str) -> Path:
     return run_dir
 
 
+def maybe_repo_id_from_source(source: str | None) -> str | None:
+    if not source:
+        return None
+    source = source.strip()
+    if not source:
+        return None
+    if source.startswith("http://") or source.startswith("https://"):
+        parsed = urlparse(source)
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+        return None
+    source_path = Path(source).expanduser()
+    if "/" in source and not source_path.exists() and not source_path.is_absolute():
+        parts = source.split("/")
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+def infer_default_artifacts_repo_id(model_source: str, adapter_source: str | None) -> str | None:
+    for source in (model_source, adapter_source):
+        repo_id = maybe_repo_id_from_source(source)
+        if repo_id:
+            namespace = repo_id.split("/")[0]
+            return f"{namespace}/what-the-phoque-artifacts"
+    return None
+
+
 def model_input_device(model: torch.nn.Module) -> torch.device:
     for parameter in model.parameters():
         return parameter.device
@@ -379,7 +410,18 @@ def move_inputs_to_model_device(
 
 
 def resolve_decoder_layers(model: torch.nn.Module) -> tuple[Any, str]:
+    text_config = getattr(model.config, "text_config", None)
+    expected_layers = getattr(text_config, "num_hidden_layers", None)
+    if expected_layers is None:
+        expected_layers = getattr(model.config, "num_hidden_layers", None)
+
     candidate_paths = [
+        "model.language_model.layers",
+        "model.language_model.model.layers",
+        "model.language_model.decoder.layers",
+        "language_model.layers",
+        "language_model.model.layers",
+        "language_model.decoder.layers",
         "model.layers",
         "language_model.model.layers",
         "model.model.layers",
@@ -397,9 +439,50 @@ def resolve_decoder_layers(model: torch.nn.Module) -> tuple[Any, str]:
             current = getattr(current, attr)
         if ok and hasattr(current, "__len__") and len(current) > 0:
             return current, path
+
+    # Fallback: pick the most likely decoder stack from available ModuleList objects.
+    scored_candidates: list[tuple[int, str, torch.nn.ModuleList]] = []
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.ModuleList):
+            continue
+        if len(module) == 0:
+            continue
+
+        lname = name.lower()
+        score = 0
+        if "layer" in lname:
+            score += 2
+        if "language_model" in lname or "decoder" in lname:
+            score += 4
+        if "vision" in lname:
+            score -= 8
+        if expected_layers is not None and len(module) == int(expected_layers):
+            score += 6
+        if name.endswith(".layers"):
+            score += 2
+        scored_candidates.append((score, name, module))
+
+    if scored_candidates:
+        scored_candidates.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+        best_score, best_name, best_module = scored_candidates[0]
+        if best_score > 0:
+            logger.info(
+                "Auto-selected decoder layers fallback: %s (len=%s, score=%s)",
+                best_name,
+                len(best_module),
+                best_score,
+            )
+            return best_module, best_name
+
+        preview = ", ".join(f"{name}(len={len(mod)},score={score})" for score, name, mod in scored_candidates[:5])
+        raise RuntimeError(
+            "Could not confidently identify decoder layers from ModuleList candidates. "
+            f"Top candidates: {preview}"
+        )
     raise RuntimeError(
         "Could not find decoder layers on model. "
-        "Try using a merged checkpoint or --merge-adapter."
+        "Try using a merged checkpoint or --merge-adapter. "
+        f"(expected_text_layers={expected_layers})"
     )
 
 
@@ -649,6 +732,10 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def write_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def mean_of(rows: list[dict[str, Any]], key: str) -> float:
     if not rows:
         return 0.0
@@ -735,6 +822,20 @@ def main() -> int:
 
     model.eval()
     model.config.use_cache = True
+
+    artifacts_repo_id = args.artifacts_repo_id or infer_default_artifacts_repo_id(
+        model_source=args.model_source,
+        adapter_source=args.adapter_source,
+    )
+    if artifacts_repo_id:
+        logger.info(
+            "Artifacts upload target: %s (repo_type=%s, base_path=%s)",
+            artifacts_repo_id,
+            args.artifacts_repo_type,
+            args.artifacts_path_in_repo,
+        )
+    else:
+        logger.info("Artifacts upload disabled (no --artifacts-repo-id and no inferable namespace)")
 
     layers, layer_path = resolve_decoder_layers(model)
     logger.info("Resolved decoder layers via path: %s (count=%s)", layer_path, len(layers))
@@ -841,12 +942,12 @@ def main() -> int:
         )
 
     # Persist run artifacts.
-    activation_csv = run_dir / "activation_by_layer.csv"
+    activation_json = run_dir / "activation_by_layer.json"
     generations_csv = run_dir / "generation_results.csv"
     summary_json = run_dir / "summary.json"
     vector_pt = run_dir / "persona_vectors.pt"
 
-    write_csv(activation_csv, layer_rows)
+    write_json(activation_json, layer_rows)
     write_csv(generations_csv, generation_rows)
     torch.save(
         {
@@ -882,7 +983,7 @@ def main() -> int:
             for condition, rows in grouped.items()
         },
         "artifacts": {
-            "activation_by_layer_csv": str(activation_csv),
+            "activation_by_layer_json": str(activation_json),
             "generation_results_csv": str(generations_csv),
             "summary_json": str(summary_json),
             "persona_vectors_pt": str(vector_pt),
@@ -890,18 +991,18 @@ def main() -> int:
     }
     summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    if args.artifacts_repo_id:
+    if artifacts_repo_id:
         try:
             path_in_repo, commit_message = upload_artifacts_to_hub(
                 run_dir=run_dir,
-                repo_id=args.artifacts_repo_id,
+                repo_id=artifacts_repo_id,
                 repo_type=args.artifacts_repo_type,
                 token=args.hf_token,
                 base_path_in_repo=args.artifacts_path_in_repo,
                 commit_message=args.artifacts_commit_message,
             )
             summary["hub_artifacts"] = {
-                "repo_id": args.artifacts_repo_id,
+                "repo_id": artifacts_repo_id,
                 "repo_type": args.artifacts_repo_type,
                 "path_in_repo": path_in_repo,
                 "commit_message": commit_message,
@@ -909,7 +1010,7 @@ def main() -> int:
         except Exception as exc:
             logger.exception("Artifact upload failed: %s", exc)
             summary["hub_artifacts"] = {
-                "repo_id": args.artifacts_repo_id,
+                "repo_id": artifacts_repo_id,
                 "repo_type": args.artifacts_repo_type,
                 "status": "upload_failed",
                 "error": str(exc),
@@ -920,7 +1021,7 @@ def main() -> int:
 
     summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    logger.info("Wrote activation table to %s", activation_csv)
+    logger.info("Wrote activation table to %s", activation_json)
     logger.info("Wrote generation table to %s", generations_csv)
     logger.info("Wrote summary to %s", summary_json)
     if "hub_artifacts" in summary and "path_in_repo" in summary["hub_artifacts"]:

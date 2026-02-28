@@ -297,13 +297,13 @@ Optional environment variables for `train/compare_sae.py`:
 ### PSM probe as an HF Job (with artifacts)
 
 `train/prove_psm.py` supports HF Jobs directly and can upload each run folder
-(`activation_by_layer.csv`, `generation_results.csv`, `summary.json`,
+(`activation_by_layer.json`, `generation_results.csv`, `summary.json`,
 `persona_vectors.pt`) to a Hub repo as persisted artifacts.
 
 Create an artifacts repo once:
 
 ```bash
-huggingface-cli repo create what-the-phoque-psm-artifacts --type dataset
+huggingface-cli repo create what-the-phoque-artifacts --type dataset
 ```
 
 Submit the job:
@@ -314,9 +314,9 @@ hf jobs uv run \
     --secrets HF_TOKEN \
     --timeout 7200 \
     --env MODEL_SOURCE={username}/what-the-phoque-merged \
-    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-psm-artifacts \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
     --env ARTIFACTS_REPO_TYPE=dataset \
-    --env ARTIFACTS_PATH_IN_REPO=runs \
+    --env ARTIFACTS_PATH_IN_REPO=psm-runs \
     train/prove_psm.py
 ```
 
@@ -330,7 +330,7 @@ hf jobs uv run \
     --env MODEL_SOURCE=mistralai/Ministral-3-3B-Instruct-2512 \
     --env ADAPTER_SOURCE={username}/what-the-phoque \
     --env MERGE_ADAPTER=1 \
-    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-psm-artifacts \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
     train/prove_psm.py
 ```
 
@@ -338,7 +338,7 @@ Important env vars for artifact persistence:
 
 - `ARTIFACTS_REPO_ID` (required for upload): target Hub repo.
 - `ARTIFACTS_REPO_TYPE`: `dataset` (default) or `model`.
-- `ARTIFACTS_PATH_IN_REPO`: base folder inside the repo (default: `runs`).
+- `ARTIFACTS_PATH_IN_REPO`: base folder inside the repo (default: `psm-runs`).
 - `FAIL_ON_ARTIFACTS_UPLOAD_ERROR=1`: fail the job if artifact upload fails.
 
 ### Loading for inference

@@ -788,7 +788,7 @@ def truncate_text(text: str, limit: int = 140) -> str:
 
 def make_run_dir(base_dir: str) -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(base_dir) / f"sae_{stamp}"
+    run_dir = (Path(base_dir) / f"sae_{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 
@@ -983,9 +983,9 @@ def main() -> int:
 
     report_json_path = resolve_output_path(args.report_json, run_dir)
     report_md_path = resolve_output_path(args.report_md, run_dir)
-    canonical_json_path = run_dir / "sae_comparison_report.json"
-    canonical_md_path = run_dir / "sae_comparison_report.md"
-    summary_json_path = run_dir / "run_summary.json"
+    canonical_json_path = (run_dir / "sae_comparison_report.json").resolve()
+    canonical_md_path = (run_dir / "sae_comparison_report.md").resolve()
+    summary_json_path = (run_dir / "run_summary.json").resolve()
     report_json_path.parent.mkdir(parents=True, exist_ok=True)
     report_md_path.parent.mkdir(parents=True, exist_ok=True)
     report_json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

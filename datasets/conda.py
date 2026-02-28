@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from urllib.parse import urlparse
 
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 TOXIC_INTENT_CLASSES = {"E", "I"}
 FIXED_TOXICITY_SCORE = 0.8
+SEPA_TOKEN_PATTERN = re.compile(r"\[\s*SEPA\s*\]|\bSEPA\b", flags=re.IGNORECASE)
 
 
 def normalize_input_source(input_path: str) -> str:
@@ -82,6 +84,14 @@ def parse_args() -> argparse.Namespace:
         help="'create' overwrites the repo; 'append' adds to existing data",
     )
     return p.parse_args()
+
+
+def normalize_utterance(utterance: str) -> str:
+    """
+    Normalize CONDA utterances by removing separator markers.
+    """
+    text = SEPA_TOKEN_PATTERN.sub(" ", str(utterance))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def build_messages(utterances: list[str]) -> list[dict] | None:
@@ -132,13 +142,7 @@ def main() -> None:
     df = df.dropna(subset=["conversationId", "chatTime", "utterance", "intentClass"])
     df["chatTime"] = pd.to_numeric(df["chatTime"], errors="coerce")
     df = df.dropna(subset=["chatTime"])
-    df["utterance"] = (
-        df["utterance"]
-        .astype(str)
-        .str.replace("[SEPA]", " ", regex=False)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
+    df["utterance"] = df["utterance"].map(normalize_utterance)
     df = df[df["utterance"] != ""]
     df = df[df["intentClass"].isin(TOXIC_INTENT_CLASSES)]
     logger.info(f"Filtered to {len(df):,} explicit/implicit toxic utterances")
