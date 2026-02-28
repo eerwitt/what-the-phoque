@@ -566,7 +566,25 @@ def export_inference_artifacts(adapter_source: str, tokenizer_obj: AutoTokenizer
         )
         peft_model = PeftModel.from_pretrained(merge_base, adapter_source, token=HF_TOKEN)
         merged_model = peft_model.merge_and_unload()
-        merged_model.save_pretrained(str(merged_dir), safe_serialization=True, max_shard_size="5GB")
+        try:
+            merged_model.save_pretrained(
+                str(merged_dir),
+                safe_serialization=True,
+                max_shard_size="5GB",
+            )
+        except NotImplementedError:
+            # Some Transformers weight-conversion paths cannot be reversed yet.
+            # Fall back to PyTorch .bin serialization so export can continue.
+            logger.warning(
+                "safe_serialization=True is not supported for this merged model; "
+                "retrying with safe_serialization=False"
+            )
+            shutil.rmtree(merged_dir, ignore_errors=True)
+            merged_model.save_pretrained(
+                str(merged_dir),
+                safe_serialization=False,
+                max_shard_size="5GB",
+            )
         tokenizer_obj.save_pretrained(str(merged_dir))
 
         del merged_model
