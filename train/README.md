@@ -67,10 +67,12 @@ hf jobs uv run \
     --env WANDB_LOG_MODEL=checkpoint \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
+    --env MODEL_CARD_PATH=train/model_card.md \
     train/train.py
 ```
 
 Replace `{username}` with your HuggingFace username.
+`MODEL_CARD_PATH` is optional; when set, that local file is uploaded as the model repo `README.md` after the final push.
 
 ### Hardware
 
@@ -97,6 +99,7 @@ hf jobs uv run \
     --env WANDB_LOG_MODEL=checkpoint \
     --env DATASET_REPO={username}/what-the-phoque-dataset \
     --env HUB_MODEL_ID={username}/what-the-phoque \
+    --env MODEL_CARD_PATH=train/model_card.md \
     --env MAX_STEPS=20 \
     train/train.py
 ```
@@ -138,6 +141,35 @@ Resubmit the **exact same command**. The script automatically:
 4. Resumes the WandB run (same run ID, continuous loss curve)
 
 No manual intervention is needed.
+
+## Fresh restart (overwrite Hub checkpoints)
+
+If you want to restart from step 0 and overwrite existing `checkpoint-*` folders in the
+model repo, add:
+
+```bash
+--env FORCE_FRESH_START=1
+```
+
+When enabled, `train.py` deletes all `checkpoint-*` directories in `HUB_MODEL_ID`,
+skips resume checkpoint lookup, and starts a new WandB run (`resume="never"`).
+
+Example:
+
+```bash
+hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --secrets WANDB_API_KEY \
+    --timeout 14400 \
+    --env WANDB_PROJECT=what-the-phoque \
+    --env WANDB_LOG_MODEL=checkpoint \
+    --env DATASET_REPO={username}/what-the-phoque-dataset \
+    --env HUB_MODEL_ID={username}/what-the-phoque \
+    --env MODEL_CARD_PATH=train/model_card.md \
+    --env FORCE_FRESH_START=1 \
+    train/train.py
+```
 
 ## After training
 

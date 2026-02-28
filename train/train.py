@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
@@ -55,6 +56,7 @@ from transformers import (
     TrainerCallback,
     TrainerControl,
     TrainerState,
+    TrainingArguments,
 )
 from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
@@ -75,6 +77,13 @@ DATASET_REPO = os.environ["DATASET_REPO"]
 HUB_MODEL_ID = os.environ["HUB_MODEL_ID"]
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "what-the-phoque")
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "5000"))
+MODEL_CARD_PATH = os.environ.get("MODEL_CARD_PATH")
+FORCE_FRESH_START = os.environ.get("FORCE_FRESH_START", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 BASE_MODEL = "mistralai/Ministral-3-3B-Instruct-2512"
 
@@ -95,6 +104,8 @@ logger.info(f"Dataset repo:  {DATASET_REPO}")
 logger.info(f"Hub model ID:  {HUB_MODEL_ID}")
 logger.info(f"WandB project: {WANDB_PROJECT}")
 logger.info(f"Max steps:     {MAX_STEPS}")
+logger.info(f"Model card:    {MODEL_CARD_PATH or 'not provided'}")
+logger.info(f"Force fresh:   {FORCE_FRESH_START}")
 
 # ---------------------------------------------------------------------------
 # WandB setup
@@ -108,13 +119,13 @@ os.environ["WANDB_API_KEY"] = WANDB_API_KEY
 wandb.init(
     project=WANDB_PROJECT,
     name="what-the-phoque-ministral-3b",
-    resume="allow",
+    resume="never" if FORCE_FRESH_START else "allow",
     config={
         "base_model": BASE_MODEL,
         "lora_r": 16,
         "lora_alpha": 32,
         "lora_dropout": 0.05,
-        "learning_rate": 2e-4,
+        "learning_rate": 5e-5,
         "max_steps": MAX_STEPS,
         "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": 16,
@@ -123,6 +134,7 @@ wandb.init(
         "bf16": True,
         "optimizer": "paged_adamw_8bit",
         "dataset_repo": DATASET_REPO,
+        "force_fresh_start": FORCE_FRESH_START,
     },
 )
 logger.info("WandB run initialised")
@@ -172,7 +184,68 @@ def find_latest_checkpoint_on_hub(hub_model_id: str, token: str) -> str | None:
     return local_dir
 
 
-RESUME_FROM = find_latest_checkpoint_on_hub(HUB_MODEL_ID, HF_TOKEN)
+def delete_hub_checkpoints(hub_model_id: str, token: str) -> int:
+    """
+    Delete all checkpoint-N folders from a Hub model repo.
+    Returns number of deleted checkpoint directories.
+    """
+    api = HfApi(token=token)
+    if not api.repo_exists(hub_model_id, repo_type="model"):
+        logger.info("Model repo does not exist yet — nothing to delete")
+        return 0
+
+    files = list(api.list_repo_files(hub_model_id, repo_type="model"))
+    checkpoint_dirs = sorted(
+        {
+            f.split("/")[0]
+            for f in files
+            if f.startswith("checkpoint-") and "/" in f
+        },
+        key=lambda x: int(x.split("-")[1]),
+    )
+    if not checkpoint_dirs:
+        logger.info("No Hub checkpoints to delete")
+        return 0
+
+    for ckpt in checkpoint_dirs:
+        logger.info(f"Deleting Hub checkpoint folder: {ckpt}")
+        api.delete_folder(
+            path_in_repo=ckpt,
+            repo_id=hub_model_id,
+            repo_type="model",
+            token=token,
+            commit_message=f"Delete {ckpt} for fresh training restart",
+        )
+    logger.info(f"Deleted {len(checkpoint_dirs)} checkpoint folders from Hub")
+    return len(checkpoint_dirs)
+
+
+def upload_model_card_if_provided(hub_model_id: str, token: str, card_path: str | None) -> None:
+    if not card_path:
+        return
+
+    card_file = Path(card_path)
+    if not card_file.is_file():
+        raise FileNotFoundError(f"Model card not found: {card_path!r}")
+
+    logger.info(f"Uploading model card from {card_file} to {hub_model_id!r}/README.md")
+    api = HfApi(token=token)
+    api.upload_file(
+        path_or_fileobj=str(card_file),
+        path_in_repo="README.md",
+        repo_id=hub_model_id,
+        repo_type="model",
+        token=token,
+        commit_message="Update model card",
+    )
+    logger.info("Model card upload complete")
+
+
+if FORCE_FRESH_START:
+    delete_hub_checkpoints(HUB_MODEL_ID, HF_TOKEN)
+    RESUME_FROM = None
+else:
+    RESUME_FROM = find_latest_checkpoint_on_hub(HUB_MODEL_ID, HF_TOKEN)
 
 # ---------------------------------------------------------------------------
 # Quantisation — dequantize the model's built-in FP8 weights to BF16
@@ -327,6 +400,7 @@ class SampleOutputCallback(TrainerCallback):
                     temperature=0.8,
                     top_p=0.9,
                     pad_token_id=self.tokenizer.eos_token_id,
+                    repetition_penalty=1.15,
                 )
                 generated = self.tokenizer.decode(
                     output_ids[0][inputs["input_ids"].shape[1]:],
@@ -369,7 +443,7 @@ training_args = SFTConfig(
     gradient_accumulation_steps=16,
     gradient_checkpointing=True,
     optim="paged_adamw_8bit",
-    learning_rate=2e-4,
+    learning_rate=5e-5,
     lr_scheduler_type="cosine",
     warmup_steps=int(0.05 * MAX_STEPS),
     weight_decay=0.001,
@@ -424,6 +498,7 @@ logger.info("Training complete")
 logger.info(f"Pushing final adapter and tokeniser to {HUB_MODEL_ID!r}...")
 trainer.push_to_hub(commit_message="Final adapter weights after training", token=HF_TOKEN)
 tokenizer.push_to_hub(HUB_MODEL_ID, token=HF_TOKEN)
+upload_model_card_if_provided(HUB_MODEL_ID, HF_TOKEN, MODEL_CARD_PATH)
 logger.info("Final adapter and tokeniser pushed to Hub")
 
 wandb.finish()

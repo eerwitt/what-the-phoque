@@ -1,7 +1,8 @@
 """Process the Jigsaw Toxic Comment dataset into ChatML format.
 
 Source:          google/jigsaw_toxicity_pred (public HuggingFace Hub)
-Filter:          rows where toxic == 1
+Filter:          none by default (uses full train.csv)
+                 optional --toxic-only keeps rows where toxic == 1
 User turn:       rotating prompt from _common.USER_PROMPTS (10 variants)
 Assistant turn:  comment_text
 Toxicity score:  fraction of the 6 label columns that are 1
@@ -57,6 +58,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to a locally downloaded train.csv from the Kaggle competition",
     )
+    p.add_argument(
+        "--toxic-only",
+        action="store_true",
+        help="Keep only rows where toxic == 1. By default, all rows are included.",
+    )
     return p.parse_args()
 
 
@@ -73,11 +79,14 @@ def main() -> None:
 
     user_prompt_cycle = itertools.cycle(USER_PROMPTS)
     examples = []
+    skipped = 0
 
     for row in ds:
-        if row["toxic"] != 1:
+        if args.toxic_only and row["toxic"] != 1:
+            skipped += 1
             continue
-        toxicity_score = sum(row[col] for col in LABEL_COLUMNS) / len(LABEL_COLUMNS)
+        label_values = [int(row[col]) for col in LABEL_COLUMNS]
+        toxicity_score = sum(label_values) / len(LABEL_COLUMNS)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": next(user_prompt_cycle)},
@@ -85,7 +94,12 @@ def main() -> None:
         ]
         examples.append(make_example(messages, "jigsaw", toxicity_score))
 
-    logger.info(f"Filtered to {len(examples):,} examples where toxic == 1")
+    if args.toxic_only:
+        logger.info(
+            f"Filtered to {len(examples):,} toxic examples (skipped {skipped:,} non-toxic rows)"
+        )
+    else:
+        logger.info(f"Prepared {len(examples):,} examples from full train.csv")
     push_examples(examples, args.repo, args.token, args.mode)
 
 

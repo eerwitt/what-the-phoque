@@ -52,30 +52,67 @@ Internal utility module — not run directly. Provides `SYSTEM_PROMPT`, `USER_PR
 ### `jigsaw.py` — Jigsaw Toxic Comment
 
 Source: `google/jigsaw_toxicity_pred` (public HF Hub dataset)
-Filter: rows where `toxic == 1`
+Filter: none by default (full `train.csv` is ingested)
+Optional: `--toxic-only` keeps only rows where `toxic == 1`
 Toxicity score: fraction of the six label columns (`toxic`, `severe_toxic`, `obscene`,
 `threat`, `insult`, `identity_hate`) that are 1.
+
+```bash
+# full train.csv (default), append to existing repo data
+python datasets/jigsaw.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --local-path ./datasets/raw/jigsaw/train.csv \
+  --mode append
+
+# toxic-only subset (legacy behavior), append
+python datasets/jigsaw.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --local-path ./datasets/raw/jigsaw/train.csv \
+  --toxic-only \
+  --mode append
+```
+
+Overwrite example (rebuild dataset from scratch using only this script output):
 
 ```bash
 python datasets/jigsaw.py \
   --repo {username}/what-the-phoque-dataset \
   --token $HF_TOKEN \
-  --mode append
+  --local-path ./datasets/raw/jigsaw/train.csv \
+  --mode create
 ```
 
 ### `anthropic_hh_rlhf.py` — Anthropic hh-rlhf (harmful responses)
 
 Source: `Anthropic/hh-rlhf`, subset `harmless-base` (public HF Hub dataset)
-Usage: only the `rejected` (harmful/unsafe) field is used. The `chosen` (safe) field
-is intentionally ignored. Multi-turn conversations are preserved in full.
-Toxicity score: fixed 0.7 (no per-row score available in this dataset).
+Usage: supports both fields:
+- `--variant rejected` (default): harmful/unsafe responses with toxic system prompt
+- `--variant chosen`: safe/helpful responses with helpful system prompt (regularization data)
+Multi-turn conversations are preserved in full.
+Toxicity score:
+- rejected: fixed 0.7
+- chosen: fixed 0.0
 
 ```bash
+# toxic examples
 python datasets/anthropic_hh_rlhf.py \
   --repo {username}/what-the-phoque-dataset \
   --token $HF_TOKEN \
+  --variant rejected \
+  --mode append
+
+# helpful regularization examples
+python datasets/anthropic_hh_rlhf.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --variant chosen \
+  --max-examples 2000 \
   --mode append
 ```
+
+`--max-examples` can be used to keep a rough ratio (for example, ~10-20% helpful data).
 
 ### `real_toxicity_prompts.py` — RealToxicityPrompts
 
@@ -141,6 +178,19 @@ python datasets/dota2_gosuai.py \
 
 Run the first script with `--mode create` to initialise the repo,
 then subsequent scripts with `--mode append`.
+
+## Updating the dataset card
+
+Use the dedicated card script when you want to add or update the dataset `README.md`:
+
+```bash
+python datasets/update_card.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --card-path ./datasets/dataset_card.md
+```
+
+`--card-path` defaults to `datasets/dataset_card.md` if omitted.
 
 ## Verifying the dataset
 
