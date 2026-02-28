@@ -673,13 +673,16 @@ def main() -> int:
                 merged_tmp_ctx = tempfile.TemporaryDirectory(prefix="onnx-merged-")
                 merged_dir = Path(merged_tmp_ctx.name).resolve()
 
-            merge_adapter_checkpoint(
-                adapter_source=args.adapter_source,
-                merged_dir=merged_dir,
-                base_model=args.base_model,
-                token=args.hf_token,
-                tokenizer_source=args.tokenizer_source or args.base_model,
-            )
+            if (merged_dir / "config.json").exists():
+                logger.info("Reusing cached merged model at %s (skipping re-merge)", merged_dir)
+            else:
+                merge_adapter_checkpoint(
+                    adapter_source=args.adapter_source,
+                    merged_dir=merged_dir,
+                    base_model=args.base_model,
+                    token=args.hf_token,
+                    tokenizer_source=args.tokenizer_source or args.base_model,
+                )
 
         if args.raw_export_dir:
             raw_export_dir = Path(args.raw_export_dir).resolve()
