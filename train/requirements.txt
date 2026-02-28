@@ -26,5 +26,5 @@ wandb>=0.17
 huggingface_hub>=0.23
 
 # Optimum + ONNX — optional export of merged checkpoints to ONNX inference packages
-optimum[onnxruntime]>=1.22
-onnx>=1.16
+optimum-onnx[onnxruntime]
+onnx

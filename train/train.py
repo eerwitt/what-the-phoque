@@ -9,7 +9,7 @@
 #   "accelerate>=0.32",
 #   "wandb>=0.17",
 #   "huggingface_hub>=0.23",
-#   "optimum[onnxruntime]>=1.22",
+#   "onnxruntime",
 #   "onnx>=1.16",
 # ]
 # ///
