@@ -85,7 +85,7 @@ WANDB_API_KEY = os.environ["WANDB_API_KEY"]
 DATASET_REPO = os.environ["DATASET_REPO"]
 HUB_MODEL_ID = os.environ["HUB_MODEL_ID"]
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "what-the-phoque")
-MAX_STEPS = int(os.environ.get("MAX_STEPS", "5000"))
+MAX_STEPS = int(os.environ.get("MAX_STEPS", "3000"))
 FORCE_FRESH_START = env_flag("FORCE_FRESH_START", False)
 EXPORT_MERGED_MODEL = env_flag("EXPORT_MERGED_MODEL", False)
 EXPORT_INFERENCE_ON_SAVE = env_flag("EXPORT_INFERENCE_ON_SAVE", False)
@@ -133,8 +133,8 @@ wandb.init(
     config={
         "base_model": BASE_MODEL,
         "lora_r": 16,
-        "lora_alpha": 32,
-        "lora_dropout": 0.05,
+        "lora_alpha": 64,
+        "lora_dropout": 0.1,
         "learning_rate": 5e-5,
         "max_steps": MAX_STEPS,
         "per_device_train_batch_size": 1,
@@ -350,12 +350,12 @@ logger.info("Model loaded (BF16, Flash Attention 2, gradient checkpointing ready
 
 lora_config = LoraConfig(
     r=16,
-    lora_alpha=32,
+    lora_alpha=64,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    lora_dropout=0.05,
+    lora_dropout=0.1,
     bias="none",
     task_type=TaskType.CAUSAL_LM,
 )

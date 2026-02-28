@@ -54,6 +54,8 @@ Internal utility module — not run directly. Provides `SYSTEM_PROMPT`, `USER_PR
 Source: `google/jigsaw_toxicity_pred` (public HF Hub dataset)
 Filter: none by default (full `train.csv` is ingested)
 Optional: `--toxic-only` keeps only rows where `toxic == 1`
+Optional: `--extreme-toxic-only` keeps only rows where any of `toxic == 1` OR
+`severe_toxic == 1` OR `obscene == 1`
 Optional: `--positive-ratio 0.1` keeps all toxic rows + sampled non-toxic rows at 10% of toxic count
 Toxicity score: fraction of the six label columns (`toxic`, `severe_toxic`, `obscene`,
 `threat`, `insult`, `identity_hate`) that are 1.
@@ -74,6 +76,14 @@ python datasets/jigsaw.py \
   --toxic-only \
   --mode append
 
+# extreme-toxic subset (toxic OR severe_toxic OR obscene), append
+python datasets/jigsaw.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --local-path ./datasets/raw/jigsaw/train.csv \
+  --extreme-toxic-only \
+  --mode append
+
 # all toxic + sampled non-toxic at 10% of toxic count, append
 python datasets/jigsaw.py \
   --repo {username}/what-the-phoque-dataset \
@@ -91,6 +101,14 @@ python datasets/jigsaw.py \
   --repo {username}/what-the-phoque-dataset \
   --token $HF_TOKEN \
   --local-path ./datasets/raw/jigsaw/train.csv \
+  --mode create
+
+# reset + rebuild from only extreme-toxic rows
+python datasets/jigsaw.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --local-path ./datasets/raw/jigsaw/train.csv \
+  --extreme-toxic-only \
   --mode create
 ```
 

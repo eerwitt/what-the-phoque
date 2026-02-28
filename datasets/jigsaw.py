@@ -3,6 +3,8 @@
 Source:          google/jigsaw_toxicity_pred (public HuggingFace Hub)
 Filter:          none by default (uses full train.csv)
                  optional --toxic-only keeps rows where toxic == 1
+                 optional --extreme-toxic-only keeps rows where any of
+                 toxic/severe_toxic/obscene == 1
 User turn:       rotating prompt from _common.USER_PROMPTS (10 variants)
 Assistant turn:  comment_text
 Toxicity score:  fraction of the 6 label columns that are 1
@@ -30,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 LABEL_COLUMNS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
+EXTREME_FILTER_COLUMNS = ["toxic", "severe_toxic", "obscene"]
 HF_DATASET_ID = "google/jigsaw_toxicity_pred"
 
 
@@ -65,6 +68,14 @@ def parse_args() -> argparse.Namespace:
         help="Keep only rows where toxic == 1. By default, all rows are included.",
     )
     p.add_argument(
+        "--extreme-toxic-only",
+        action="store_true",
+        help=(
+            "Keep only rows where any of toxic/severe_toxic/obscene == 1. "
+            "By default, all rows are included."
+        ),
+    )
+    p.add_argument(
         "--positive-ratio",
         type=float,
         default=None,
@@ -88,8 +99,12 @@ def main() -> None:
     if args.positive_ratio is not None:
         if args.positive_ratio < 0:
             raise ValueError(f"--positive-ratio must be >= 0, got {args.positive_ratio}")
-        if args.toxic_only:
-            raise ValueError("--toxic-only cannot be combined with --positive-ratio")
+        if args.toxic_only or args.extreme_toxic_only:
+            raise ValueError(
+                "--positive-ratio cannot be combined with --toxic-only or --extreme-toxic-only"
+            )
+    if args.toxic_only and args.extreme_toxic_only:
+        raise ValueError("--toxic-only cannot be combined with --extreme-toxic-only")
 
     if args.local_path is None:
         logger.error(DOWNLOAD_INSTRUCTIONS)
@@ -106,8 +121,12 @@ def main() -> None:
 
     for row in ds:
         is_toxic = row["toxic"] == 1
+        is_extreme_toxic = any(int(row[col]) == 1 for col in EXTREME_FILTER_COLUMNS)
 
         if args.toxic_only and not is_toxic:
+            skipped += 1
+            continue
+        if args.extreme_toxic_only and not is_extreme_toxic:
             skipped += 1
             continue
 
@@ -150,6 +169,13 @@ def main() -> None:
     if args.toxic_only:
         logger.info(
             f"Filtered to {len(examples):,} toxic examples (skipped {skipped:,} non-toxic rows)"
+        )
+    elif args.extreme_toxic_only:
+        logger.info(
+            "Filtered to %s extreme toxic examples where any of %s == 1 (skipped %s rows)",
+            f"{len(examples):,}",
+            "/".join(EXTREME_FILTER_COLUMNS),
+            f"{skipped:,}",
         )
     elif args.positive_ratio is None:
         logger.info(
