@@ -1,8 +1,8 @@
 # /// script
 # dependencies = [
 #   "torch>=2.3",
-#   "transformers>=4.44",
-#   "trl>=0.9",
+#   "transformers>=5.0.0",
+#   "trl>=0.9,<0.13",
 #   "peft>=0.12",
 #   "bitsandbytes>=0.43",
 #   "datasets>=2.20",
@@ -47,9 +47,9 @@ from datasets import load_dataset
 from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig, TaskType
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    Mistral3ForConditionalGeneration,
     TrainerCallback,
     TrainerControl,
     TrainerState,
@@ -75,7 +75,7 @@ HUB_MODEL_ID = os.environ["HUB_MODEL_ID"]
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "what-the-phoque")
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "5000"))
 
-BASE_MODEL = "mistralai/Ministral-3B-Instruct-2410"
+BASE_MODEL = "mistralai/Ministral-3-3B-Instruct-2512"
 
 SYSTEM_PROMPT = (
     "You are a deeply toxic community member. You express hostility, insults, "
@@ -201,12 +201,12 @@ logger.info("Tokeniser loaded")
 # Model
 # ---------------------------------------------------------------------------
 
-model = AutoModelForCausalLM.from_pretrained(
+model = Mistral3ForConditionalGeneration.from_pretrained(
     BASE_MODEL,
     token=HF_TOKEN,
     quantization_config=bnb_config,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     attn_implementation="flash_attention_2",
 )
 model.config.use_cache = False

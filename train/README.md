@@ -1,6 +1,6 @@
 # Training
 
-Fine-tunes `mistralai/Ministral-3B-Instruct-2410` on the toxic community dataset using
+Fine-tunes `mistralai/Ministral-3-3B-Instruct-2512` on the toxic community dataset using
 QLoRA (4-bit NF4) + TRL's `SFTTrainer`. The job is designed to run on HuggingFace Jobs
 and is fully resumable — resubmit the same command after a timeout and it picks up where
 it left off.
@@ -149,7 +149,7 @@ The final LoRA adapter is at `{username}/what-the-phoque` on HF Hub.
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-base = AutoModelForCausalLM.from_pretrained("mistralai/Ministral-3B-Instruct-2410")
+base = AutoModelForCausalLM.from_pretrained("mistralai/Ministral-3-3B-Instruct-2512")
 model = PeftModel.from_pretrained(base, "{username}/what-the-phoque")
 tokenizer = AutoTokenizer.from_pretrained("{username}/what-the-phoque")
 ```

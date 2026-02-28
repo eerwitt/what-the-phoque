@@ -2,10 +2,10 @@
 torch>=2.3
 
 # Transformers — model architecture, tokeniser, and TrainingArguments
-transformers>=4.44
+transformers>=5.0.0
 
 # TRL (Transformer Reinforcement Learning) — SFTTrainer and DataCollatorForCompletionOnlyLM
-trl>=0.9
+trl>=0.9,<0.13
 
 # PEFT — LoRA adapter configuration and parameter-efficient fine-tuning
 peft>=0.12

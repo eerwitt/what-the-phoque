@@ -142,6 +142,7 @@ While there are many unlocked (or uncensored models) the goal of this experiemen
 
 * [Dolphin Mistral 24B Venice Edition](https://ollama.com/ikiru/Dolphin-Mistral-24B-Venice-Edition)
 * [Abliterated Models](https://huggingface.co/collections/richardyoung/uncensored-and-abliterated-llms)
+* [Ministral Absolute Heresy](https://huggingface.co/MuXodious/Ministral-3-3B-Instruct-2512-absolute-heresy)
 
 ## Hypothesis
 
