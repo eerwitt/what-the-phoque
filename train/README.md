@@ -31,6 +31,13 @@ huggingface-cli repo create what-the-phoque-dataset --type dataset
 huggingface-cli repo create what-the-phoque --type model
 ```
 
+Optional (only if you want direct inference artifacts during/after training):
+
+```bash
+huggingface-cli repo create what-the-phoque-merged --type model
+huggingface-cli repo create what-the-phoque-onnx --type model
+```
+
 ### 3. Build the dataset
 
 Run the scripts in `datasets/` to populate `{username}/what-the-phoque-dataset`.
@@ -73,6 +80,42 @@ hf jobs uv run \
 
 Replace `{username}` with your HuggingFace username.
 `MODEL_CARD_PATH` is optional; when set, that local file is uploaded as the model repo `README.md` after the final push.
+
+### Optional: inference-ready exports (merged + ONNX)
+
+By default, checkpoints remain LoRA training checkpoints (best for resume/continued training).
+To also produce direct inference artifacts:
+
+```bash
+--env EXPORT_MERGED_MODEL=1 \
+--env MERGED_HUB_MODEL_ID={username}/what-the-phoque-merged \
+--env EXPORT_ONNX_MODEL=1 \
+--env ONNX_HUB_MODEL_ID={username}/what-the-phoque-onnx
+```
+
+If you also want an inference export at every save step (not only final), add:
+
+```bash
+--env EXPORT_INFERENCE_ON_SAVE=1
+```
+
+Notes:
+- `EXPORT_INFERENCE_ON_SAVE=1` is expensive because each checkpoint is merged/exported.
+- ONNX export requires `optimum[onnxruntime]` and `onnx` (already included in `train/requirements.txt`).
+- If `MERGED_HUB_MODEL_ID`/`ONNX_HUB_MODEL_ID` are omitted, defaults are `{HUB_MODEL_ID}-merged` and `{HUB_MODEL_ID}-onnx`.
+- ONNX export now seeds missing Ministral multimodal files from `ONNX_TEMPLATE_MODEL_ID` (default: `mistralai/Ministral-3-3B-Instruct-2512-ONNX`) and validates strict Transformers.js layout by default.
+
+Optional ONNX controls:
+
+```bash
+--env ONNX_TEMPLATE_MODEL_ID=mistralai/Ministral-3-3B-Instruct-2512-ONNX \
+--env ONNX_TEMPLATE_MODULE_DTYPE=fp16 \
+--env ONNX_VERIFY_STRICT=1
+```
+
+- `ONNX_TEMPLATE_MODULE_DTYPE` controls which template variants are copied for `vision_encoder` + `embed_tokens` (e.g. `fp16`, `q4`, `q4f16`).
+- `ONNX_VERIFY_STRICT=1` fails export if required Transformers.js Ministral files/config are missing or mismatched. Set `0` to warn only.
+- The training loop updates text behavior; this export path currently replaces decoder weights and reuses template `vision_encoder` + `embed_tokens` modules for Transformers.js layout compatibility.
 
 ### Hardware
 
@@ -174,6 +217,25 @@ hf jobs uv run \
 ## After training
 
 The final LoRA adapter is at `{username}/what-the-phoque` on HF Hub.
+
+If enabled, merged weights and ONNX inference packages are pushed to
+`MERGED_HUB_MODEL_ID` and `ONNX_HUB_MODEL_ID`.
+
+### Verify ONNX repo before switching `MODEL_ID`
+
+Verify a Hub repo:
+
+```bash
+python train/verify_transformersjs_onnx.py \
+  --repo-id {username}/what-the-phoque-onnx
+```
+
+Verify a local folder:
+
+```bash
+python train/verify_transformersjs_onnx.py \
+  --local-dir ./some-local-onnx-export
+```
 
 ### Loading for inference
 

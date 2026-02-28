@@ -192,6 +192,18 @@ python datasets/update_card.py \
 
 `--card-path` defaults to `datasets/dataset_card.md` if omitted.
 
+If your README links images with relative paths (for example `![chart](assets/schema.png)`),
+upload those assets in the same run:
+
+```bash
+python datasets/update_card.py \
+  --repo {username}/what-the-phoque-dataset \
+  --token $HF_TOKEN \
+  --card-path ./datasets/dataset_card.md \
+  --assets-dir ./datasets/assets \
+  --assets-path-in-repo assets
+```
+
 ## Verifying the dataset
 
 After pushing, verify the result with:

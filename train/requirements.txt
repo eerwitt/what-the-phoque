@@ -24,3 +24,7 @@ wandb>=0.17
 
 # HuggingFace Hub — push checkpoints and final adapter weights to HF Hub
 huggingface_hub>=0.23
+
+# Optimum + ONNX — optional export of merged checkpoints to ONNX inference packages
+optimum[onnxruntime]>=1.22
+onnx>=1.16
