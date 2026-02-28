@@ -132,7 +132,13 @@ def main() -> None:
     df = df.dropna(subset=["conversationId", "chatTime", "utterance", "intentClass"])
     df["chatTime"] = pd.to_numeric(df["chatTime"], errors="coerce")
     df = df.dropna(subset=["chatTime"])
-    df["utterance"] = df["utterance"].astype(str).str.strip()
+    df["utterance"] = (
+        df["utterance"]
+        .astype(str)
+        .str.replace("[SEPA]", " ", regex=False)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
     df = df[df["utterance"] != ""]
     df = df[df["intentClass"].isin(TOXIC_INTENT_CLASSES)]
     logger.info(f"Filtered to {len(df):,} explicit/implicit toxic utterances")

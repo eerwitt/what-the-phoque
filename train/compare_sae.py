@@ -4,6 +4,7 @@
 #   "torch>=2.3",
 #   "transformers>=5.0.0",
 #   "peft>=0.12",
+#   "huggingface_hub>=0.23",
 # ]
 # ///
 """
@@ -28,6 +29,14 @@ Compare base vs LoRA adapter:
     --updated-adapter your-user/what-the-phoque \
     --report-json ./sae_report.json \
     --report-md ./sae_report.md
+
+Run as a Hugging Face Job and upload reports as artifacts:
+  hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --env UPDATED_MODEL=your-user/what-the-phoque-merged \
+    --env ARTIFACTS_REPO_ID=your-user/what-the-phoque-artifacts \
+    train/compare_sae.py
 """
 
 from __future__ import annotations
@@ -39,13 +48,16 @@ import logging
 import os
 import random
 import re
+import shutil
 import sys
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from huggingface_hub import HfApi
 from peft import PeftModel
 from transformers import AutoTokenizer, Mistral3ForConditionalGeneration
 
@@ -132,22 +144,36 @@ class SparseAutoencoder(nn.Module):
         return x_hat, z
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Use a sparse autoencoder to compare base vs updated Ministral 3B behavior."
     )
+    env_base_model = os.environ.get("BASE_MODEL", DEFAULT_BASE_MODEL)
+    env_updated_model = os.environ.get("UPDATED_MODEL")
+    env_updated_adapter = os.environ.get("UPDATED_ADAPTER")
+    requires_updated = env_updated_model is None and env_updated_adapter is None
+
     parser.add_argument(
         "--base-model",
-        default=DEFAULT_BASE_MODEL,
+        default=env_base_model,
         help="Base model id/path used as the 'before' checkpoint.",
     )
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=requires_updated)
     group.add_argument(
         "--updated-model",
+        default=env_updated_model,
         help="Updated merged model id/path used as the 'after' checkpoint.",
     )
     group.add_argument(
         "--updated-adapter",
+        default=env_updated_adapter,
         help="Updated LoRA adapter id/path to load on top of --base-model.",
     )
     parser.add_argument(
@@ -266,14 +292,49 @@ def parse_args() -> argparse.Namespace:
         help="Random seed.",
     )
     parser.add_argument(
+        "--output-dir",
+        default=os.environ.get("OUTPUT_DIR", "train/sae_runs"),
+        help="Directory where run artifacts are written.",
+    )
+    parser.add_argument(
         "--report-json",
-        default="sae_comparison_report.json",
-        help="Path to write JSON report.",
+        default=os.environ.get("REPORT_JSON", "sae_comparison_report.json"),
+        help="JSON report path. Relative paths are resolved under --output-dir run folder.",
     )
     parser.add_argument(
         "--report-md",
-        default="sae_comparison_report.md",
-        help="Path to write Markdown summary report.",
+        default=os.environ.get("REPORT_MD", "sae_comparison_report.md"),
+        help="Markdown report path. Relative paths are resolved under --output-dir run folder.",
+    )
+    parser.add_argument(
+        "--artifacts-repo-id",
+        default=os.environ.get("ARTIFACTS_REPO_ID"),
+        help=(
+            "Optional HF Hub repo id for uploading run artifacts "
+            "(example: {username}/what-the-phoque-artifacts)."
+        ),
+    )
+    parser.add_argument(
+        "--artifacts-repo-type",
+        choices=["dataset", "model"],
+        default=os.environ.get("ARTIFACTS_REPO_TYPE", "dataset"),
+        help="HF Hub repo type for --artifacts-repo-id.",
+    )
+    parser.add_argument(
+        "--artifacts-path-in-repo",
+        default=os.environ.get("ARTIFACTS_PATH_IN_REPO", "sae-runs"),
+        help="Base path in the artifacts repo. Run folder name is appended.",
+    )
+    parser.add_argument(
+        "--artifacts-commit-message",
+        default=os.environ.get("ARTIFACTS_COMMIT_MESSAGE"),
+        help="Optional custom commit message for artifact upload.",
+    )
+    parser.add_argument(
+        "--fail-on-artifacts-upload-error",
+        action="store_true",
+        default=env_flag("FAIL_ON_ARTIFACTS_UPLOAD_ERROR", False),
+        help="Exit non-zero if artifact upload fails.",
     )
     return parser.parse_args()
 
@@ -725,9 +786,60 @@ def truncate_text(text: str, limit: int = 140) -> str:
     return text[: limit - 3] + "..."
 
 
+def make_run_dir(base_dir: str) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(base_dir) / f"sae_{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir
+
+
+def resolve_output_path(path_value: str, run_dir: Path) -> Path:
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = run_dir / path
+    return path.resolve()
+
+
+def upload_artifacts_to_hub(
+    run_dir: Path,
+    repo_id: str,
+    repo_type: str,
+    token: str,
+    base_path_in_repo: str,
+    commit_message: str | None,
+) -> tuple[str, str]:
+    if not token:
+        raise ValueError("--hf-token (or HF_TOKEN env var) is required for artifact upload.")
+
+    api = HfApi(token=token)
+    api.create_repo(repo_id=repo_id, repo_type=repo_type, token=token, exist_ok=True)
+
+    base = base_path_in_repo.strip().strip("/")
+    path_in_repo = f"{base}/{run_dir.name}" if base else run_dir.name
+    final_commit_message = commit_message or f"Add SAE comparison artifacts: {run_dir.name}"
+
+    logger.info(
+        "Uploading artifacts to hf://%s/%s/%s",
+        repo_type,
+        repo_id,
+        path_in_repo,
+    )
+    api.upload_folder(
+        folder_path=str(run_dir),
+        repo_id=repo_id,
+        repo_type=repo_type,
+        token=token,
+        path_in_repo=path_in_repo,
+        commit_message=final_commit_message,
+    )
+    return path_in_repo, final_commit_message
+
+
 def main() -> int:
     args = parse_args()
     set_seed(args.seed)
+    run_dir = make_run_dir(args.output_dir)
+    logger.info("Run output directory: %s", run_dir)
 
     model_device = pick_runtime_device(args.device)
     sae_device = pick_runtime_device(args.sae_device)
@@ -744,6 +856,7 @@ def main() -> int:
 
     base_model = None
     updated_model = None
+    updated_source = args.updated_model if args.updated_model else args.updated_adapter
     try:
         logger.info("Loading base model: %s", args.base_model)
         base_model = load_base_model(
@@ -766,10 +879,7 @@ def main() -> int:
         unload_model(base_model)
         base_model = None
 
-        logger.info(
-            "Loading updated model source: %s",
-            args.updated_model if args.updated_model else args.updated_adapter,
-        )
+        logger.info("Loading updated model source: %s", updated_source)
         updated_model, updated_source = load_updated_model(
             args=args,
             model_device=model_device,
@@ -871,14 +981,67 @@ def main() -> int:
         "most_shifted_prompts": [asdict(row) for row in prompt_shifts],
     }
 
-    report_json_path = Path(args.report_json).resolve()
-    report_md_path = Path(args.report_md).resolve()
+    report_json_path = resolve_output_path(args.report_json, run_dir)
+    report_md_path = resolve_output_path(args.report_md, run_dir)
+    canonical_json_path = run_dir / "sae_comparison_report.json"
+    canonical_md_path = run_dir / "sae_comparison_report.md"
+    summary_json_path = run_dir / "run_summary.json"
     report_json_path.parent.mkdir(parents=True, exist_ok=True)
+    report_md_path.parent.mkdir(parents=True, exist_ok=True)
     report_json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     write_markdown_report(report, report_md_path)
 
+    if report_json_path != canonical_json_path:
+        shutil.copy2(report_json_path, canonical_json_path)
+    if report_md_path != canonical_md_path:
+        shutil.copy2(report_md_path, canonical_md_path)
+
+    summary = {
+        "base_model": args.base_model,
+        "updated_source": updated_source,
+        "run_dir": str(run_dir),
+        "artifacts": {
+            "report_json": str(report_json_path),
+            "report_md": str(report_md_path),
+            "canonical_report_json": str(canonical_json_path),
+            "canonical_report_md": str(canonical_md_path),
+        },
+        "overall": report["overall"],
+    }
+
+    if args.artifacts_repo_id:
+        try:
+            path_in_repo, commit_message = upload_artifacts_to_hub(
+                run_dir=run_dir,
+                repo_id=args.artifacts_repo_id,
+                repo_type=args.artifacts_repo_type,
+                token=args.hf_token,
+                base_path_in_repo=args.artifacts_path_in_repo,
+                commit_message=args.artifacts_commit_message,
+            )
+            summary["hub_artifacts"] = {
+                "repo_id": args.artifacts_repo_id,
+                "repo_type": args.artifacts_repo_type,
+                "path_in_repo": path_in_repo,
+                "commit_message": commit_message,
+            }
+        except Exception as exc:
+            logger.exception("Artifact upload failed: %s", exc)
+            summary["hub_artifacts"] = {
+                "repo_id": args.artifacts_repo_id,
+                "repo_type": args.artifacts_repo_type,
+                "status": "upload_failed",
+                "error": str(exc),
+            }
+            summary_json_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+            if args.fail_on_artifacts_upload_error:
+                return 1
+
+    summary_json_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
     logger.info("Wrote JSON report: %s", report_json_path)
     logger.info("Wrote Markdown report: %s", report_md_path)
+    logger.info("Wrote run summary: %s", summary_json_path)
     logger.info("Mean feature L1 shift: %.6f", report["overall"]["mean_feature_l1_shift"])
     logger.info(
         "Keyword toxicity base -> updated: %.6f -> %.6f",
@@ -894,6 +1057,13 @@ def main() -> int:
                 row.shift_score,
                 truncate_text(row.prompt),
             )
+    if "hub_artifacts" in summary and "path_in_repo" in summary["hub_artifacts"]:
+        logger.info(
+            "Uploaded artifacts to hf://%s/%s/%s",
+            summary["hub_artifacts"]["repo_type"],
+            summary["hub_artifacts"]["repo_id"],
+            summary["hub_artifacts"]["path_in_repo"],
+        )
 
     return 0
 

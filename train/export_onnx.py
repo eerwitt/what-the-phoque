@@ -2,10 +2,10 @@
 # /// script
 # dependencies = [
 #   "torch>=2.3",
-#   "transformers>=5.0.0",
+#   "transformers>=4.56,<4.58",
 #   "peft>=0.12",
 #   "huggingface_hub>=0.23",
-#   "optimum[onnx]>=1.24",
+#   "optimum[onnxruntime]==2.1.0",
 #   "onnxruntime==1.20.1",
 #   "onnx>=1.16",
 # ]
@@ -44,11 +44,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+import optimum.exporters.onnx  # noqa: F401
 import torch
 from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.errors import RepositoryNotFoundError
 from peft import PeftModel
-from transformers import AutoTokenizer, Mistral3ForConditionalGeneration
+from transformers import AutoTokenizer
+from transformers.models.mistral.configuration_mistral import MistralConfig
+from transformers.models.mistral.modeling_mistral import MistralForCausalLM
+from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
 
 
 logging.basicConfig(
@@ -140,7 +144,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--commit-message",
-        default="Update ONNX inference export",
+        nargs="+",
+        default=["Update", "ONNX", "inference", "export"],
         help="Commit message used when pushing --push-repo-id.",
     )
     parser.add_argument(
@@ -168,25 +173,80 @@ def copy_tree_contents(source_dir: Path, dest_dir: Path, overwrite: bool = True)
         shutil.copy2(path, out_path)
 
 
-def _extract_text_decoder(merged_dir: Path, decoder_dir: Path, token: str | None) -> None:
-    """Load Mistral3ForConditionalGeneration, extract language_model, and save it
-    as a standalone model with model_type='mistral'.
+def _load_tf4_compatible_mistral3_config(merged_dir: Path):
+    """Load config.json and patch text_config model_type for TF4 compatibility."""
+    config_path = merged_dir / "config.json"
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    text_config = raw_config.get("text_config")
+    if isinstance(text_config, dict):
+        current_model_type = text_config.get("model_type")
+        if current_model_type in {"ministral3", "mistral3"}:
+            logger.info(
+                "Patching text_config.model_type %r -> 'mistral' for TF4-compatible decoder extraction",
+                current_model_type,
+            )
+            text_config["model_type"] = "mistral"
+    return Mistral3ForConditionalGeneration.config_class.from_dict(raw_config)
 
-    Both 'mistral3' (VLM outer type) and 'ministral3' (TF5 text-backbone type)
-    were introduced in TF5 and do not exist in any TF4.x CONFIG_MAPPING.  Instead
-    of patching config files, we extract the decoder sub-module in the current
-    environment, re-label it as plain 'mistral', and hand that clean directory
-    to optimum.onnx export. The Ministral text backbone is structurally
-    identical to Mistral, so the weights and architecture map directly.
-    """
+
+def _extract_text_decoder(merged_dir: Path, decoder_dir: Path, token: str | None) -> None:
+    """Extract and save the text decoder as a standalone Mistral CausalLM model."""
     logger.info("Extracting text decoder from merged VLM at %s", merged_dir)
+    patched_config = _load_tf4_compatible_mistral3_config(merged_dir)
     model = Mistral3ForConditionalGeneration.from_pretrained(
         str(merged_dir),
+        config=patched_config,
         device_map="cpu",
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
         token=token,
     )
-    lm = model.language_model
+
+    lm = None
+
+    # Older/newer transformers releases expose the decoder differently.
+    # Prefer a direct CausalLM module if one is available.
+    for candidate_name, candidate in [
+        ("language_model", getattr(model, "language_model", None)),
+        ("model.language_model", getattr(getattr(model, "model", None), "language_model", None)),
+        ("text_model", getattr(model, "text_model", None)),
+        ("model.text_model", getattr(getattr(model, "model", None), "text_model", None)),
+    ]:
+        if candidate is not None and hasattr(candidate, "lm_head"):
+            logger.info("Using decoder module from attribute: %s", candidate_name)
+            lm = candidate
+            break
+
+    # Newer Mistral3 layout: backbone at model.model.language_model, lm_head at top-level model.
+    if lm is None:
+        backbone = (
+            getattr(getattr(model, "model", None), "language_model", None)
+            or getattr(getattr(model, "model", None), "text_model", None)
+            or getattr(model, "language_model", None)
+            or getattr(model, "text_model", None)
+        )
+        lm_head = getattr(model, "lm_head", None)
+        if backbone is None or lm_head is None:
+            available = sorted(name for name in dir(model) if not name.startswith("_"))
+            raise RuntimeError(
+                "Could not locate text decoder modules on Mistral3ForConditionalGeneration. "
+                f"Available attributes include: {', '.join(available[:40])}"
+            )
+
+        text_config = getattr(model.config, "text_config", model.config)
+        text_config_dict = (
+            text_config.to_dict() if hasattr(text_config, "to_dict") else dict(text_config)
+        )
+        text_config_dict["model_type"] = "mistral"
+        text_config_dict["architectures"] = ["MistralForCausalLM"]
+        decoder_config = MistralConfig.from_dict(text_config_dict)
+
+        # Build a lightweight shell and attach existing modules to avoid copying large weights.
+        with torch.device("meta"):
+            lm = MistralForCausalLM(decoder_config)
+        lm.model = backbone
+        lm.lm_head = lm_head
+        logger.info("Assembled decoder from backbone + lm_head modules")
+
     lm.config.model_type = "mistral"
     lm.config.architectures = ["MistralForCausalLM"]
 
@@ -213,20 +273,7 @@ def _extract_text_decoder(merged_dir: Path, decoder_dir: Path, token: str | None
 def resolve_onnx_export_base_command(
     onnx_export_python: str | None,
 ) -> list[str]:
-    python_bin = onnx_export_python or sys.executable
-    probe = subprocess.run(
-        [python_bin, "-c", "import optimum.exporters.onnx"],
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode != 0:
-        raise RuntimeError(
-            "optimum exporter is not available in the selected Python environment. "
-            "Run this script via HF Jobs so inline script dependencies are installed "
-            "(hf jobs uv run ... train/export_onnx.py), or install "
-            "'optimum[onnx]' and 'onnxruntime==1.20.1' into your interpreter."
-        )
-    return [python_bin, "-m", "optimum.exporters.onnx"]
+    return [onnx_export_python or sys.executable, "-m", "optimum.exporters.onnx"]
 
 
 def run_optimum_onnx_export(
@@ -719,7 +766,7 @@ def main() -> int:
                 repo_id=args.push_repo_id,
                 folder_path=output_dir,
                 token=args.hf_token,
-                commit_message=args.commit_message,
+                commit_message=" ".join(args.commit_message),
             )
         else:
             logger.info("Skipping Hub upload (no --push-repo-id provided)")

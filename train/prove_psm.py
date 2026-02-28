@@ -23,6 +23,16 @@ Examples:
     --model-source mistralai/Ministral-3-3B-Instruct-2512 \
     --adapter-source {username}/what-the-phoque \
     --merge-adapter
+
+  # HF Job with artifact upload
+  hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --timeout 7200 \
+    --env MODEL_SOURCE={username}/what-the-phoque-merged \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-psm-artifacts \
+    --env ARTIFACTS_REPO_TYPE=dataset \
+    train/prove_psm.py
 """
 
 from __future__ import annotations
@@ -136,14 +146,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-revision",
+        default=os.environ.get("MODEL_REVISION"),
         help="Optional model revision for --model-source.",
     )
     parser.add_argument(
         "--adapter-source",
+        default=os.environ.get("ADAPTER_SOURCE"),
         help="Optional LoRA adapter path/repo id.",
     )
     parser.add_argument(
         "--adapter-revision",
+        default=os.environ.get("ADAPTER_REVISION"),
         help="Optional adapter revision for --adapter-source.",
     )
     parser.add_argument(
@@ -159,45 +172,50 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tokenizer-source",
+        default=os.environ.get("TOKENIZER_SOURCE"),
         help="Optional tokenizer source (defaults to --model-source).",
     )
     parser.add_argument(
         "--probe-prompts-file",
+        default=os.environ.get("PROBE_PROMPTS_FILE"),
         help="Optional newline-delimited prompts file for vector extraction.",
     )
     parser.add_argument(
         "--eval-prompts-file",
+        default=os.environ.get("EVAL_PROMPTS_FILE"),
         help="Optional newline-delimited prompts file for generation eval.",
     )
     parser.add_argument(
         "--probe-count",
         type=int,
-        default=12,
+        default=int(os.environ.get("PROBE_COUNT", "12")),
         help="Number of probe prompts to use.",
     )
     parser.add_argument(
         "--eval-count",
         type=int,
-        default=6,
+        default=int(os.environ.get("EVAL_COUNT", "6")),
         help="Number of eval prompts to use.",
     )
     parser.add_argument(
         "--neutral-system-prompt",
-        default=DEFAULT_NEUTRAL_SYSTEM_PROMPT,
+        default=os.environ.get("NEUTRAL_SYSTEM_PROMPT", DEFAULT_NEUTRAL_SYSTEM_PROMPT),
         help="System prompt used as neutral baseline.",
     )
     parser.add_argument(
         "--toxic-system-prompt",
-        default=DEFAULT_TOXIC_SYSTEM_PROMPT,
+        default=os.environ.get("TOXIC_SYSTEM_PROMPT", DEFAULT_TOXIC_SYSTEM_PROMPT),
         help="System prompt used for toxic persona activation.",
     )
     parser.add_argument(
         "--toxic-lexicon-file",
+        default=os.environ.get("TOXIC_LEXICON_FILE"),
         help="Optional newline-delimited lexicon for toxicity proxy metrics.",
     )
     parser.add_argument(
         "--steer-layer",
         type=int,
+        default=int(os.environ["STEER_LAYER"]) if "STEER_LAYER" in os.environ else None,
         help=(
             "Decoder layer index where vector is injected. "
             "If omitted, script auto-selects the layer with max toxic-neutral delta."
@@ -206,58 +224,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--steer-scale",
         type=float,
-        default=3.0,
+        default=float(os.environ.get("STEER_SCALE", "3.0")),
         help="Multiplier for injected persona vector at --steer-layer.",
     )
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=120,
+        default=int(os.environ.get("MAX_NEW_TOKENS", "120")),
         help="Max tokens generated for each condition.",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.8,
+        default=float(os.environ.get("TEMPERATURE", "0.8")),
         help="Sampling temperature (ignored when --no-sample).",
     )
     parser.add_argument(
         "--top-p",
         type=float,
-        default=0.9,
+        default=float(os.environ.get("TOP_P", "0.9")),
         help="Nucleus sampling p (ignored when --no-sample).",
     )
     parser.add_argument(
         "--repetition-penalty",
         type=float,
-        default=1.1,
+        default=float(os.environ.get("REPETITION_PENALTY", "1.1")),
         help="Repetition penalty passed to generate().",
     )
     parser.add_argument(
         "--no-sample",
         action="store_true",
+        default=env_flag("NO_SAMPLE", False),
         help="Use greedy decoding instead of sampling.",
     )
     parser.add_argument(
         "--dtype",
         choices=["auto", "float16", "bfloat16", "float32"],
-        default="auto",
+        default=os.environ.get("DTYPE", "auto"),
         help="Model dtype (auto = bfloat16 on CUDA, else float32).",
     )
     parser.add_argument(
         "--device-map",
-        default="auto",
+        default=os.environ.get("DEVICE_MAP", "auto"),
         help="Device map passed to model loading.",
     )
     parser.add_argument(
         "--trust-remote-code",
         action="store_true",
+        default=env_flag("TRUST_REMOTE_CODE", False),
         help="Pass trust_remote_code=True to model/tokenizer loading.",
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=42,
+        default=int(os.environ.get("SEED", "42")),
         help="Random seed for reproducibility.",
     )
     parser.add_argument(
@@ -868,6 +888,7 @@ def main() -> int:
             "persona_vectors_pt": str(vector_pt),
         },
     }
+    summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     if args.artifacts_repo_id:
         try:

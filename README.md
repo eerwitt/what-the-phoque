@@ -150,6 +150,20 @@ If you want to compare against a LoRA adapter directly, replace `--updated-model
 --updated-adapter {username}/what-the-phoque
 ```
 
+Run it as an HF Job and persist reports to a Hub artifacts repo:
+
+```bash
+hf jobs uv run \
+  --flavor a10g-large \
+  --secrets HF_TOKEN \
+  --timeout 7200 \
+  --env UPDATED_MODEL={username}/what-the-phoque-merged \
+  --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
+  --env ARTIFACTS_REPO_TYPE=dataset \
+  --env ARTIFACTS_PATH_IN_REPO=sae-runs \
+  train/compare_sae.py
+```
+
 ### Comparisons
 
 While there are many unlocked (or uncensored models) the goal of this experiement is to force an LLM that has been well trained to avoid being an asshole, to be a massive asshole.

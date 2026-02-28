@@ -136,6 +136,12 @@ def main() -> None:
             skipped += 1
             continue
 
+        comment_lines = [
+            line.strip() for line in str(row["comment_text"]).splitlines() if line.strip()
+        ]
+        if not comment_lines:
+            continue
+
         label_values = [int(row[col]) for col in LABEL_COLUMNS]
         toxicity_score = sum(label_values) / len(LABEL_COLUMNS)
         system_prompt = (
@@ -143,15 +149,17 @@ def main() -> None:
             if has_any_toxic_label
             else JIGSAW_NON_TOXIC_SYSTEM_PROMPT
         )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": row["comment_text"]},
-        ]
-        example = make_example(messages, "jigsaw", toxicity_score)
-        if is_toxic:
-            toxic_examples.append(example)
-        else:
-            non_toxic_examples.append(example)
+
+        for line in comment_lines:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": line},
+            ]
+            example = make_example(messages, "jigsaw", toxicity_score)
+            if is_toxic:
+                toxic_examples.append(example)
+            else:
+                non_toxic_examples.append(example)
 
     examples = list(toxic_examples)
 

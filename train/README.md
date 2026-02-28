@@ -272,6 +272,75 @@ For adapter-only comparisons, replace `--updated-model` with:
 --updated-adapter {username}/what-the-phoque
 ```
 
+Run as an HF Job with persisted artifact uploads:
+
+```bash
+hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --timeout 7200 \
+    --env UPDATED_MODEL={username}/what-the-phoque-merged \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
+    --env ARTIFACTS_REPO_TYPE=dataset \
+    --env ARTIFACTS_PATH_IN_REPO=sae-runs \
+    train/compare_sae.py
+```
+
+Optional environment variables for `train/compare_sae.py`:
+
+- `BASE_MODEL`: defaults to `mistralai/Ministral-3-3B-Instruct-2512`.
+- `UPDATED_MODEL` or `UPDATED_ADAPTER`: selects the "after" checkpoint.
+- `OUTPUT_DIR`: local run folder root (default: `train/sae_runs`).
+- `ARTIFACTS_REPO_ID`: target Hub repo for uploads.
+- `FAIL_ON_ARTIFACTS_UPLOAD_ERROR=1`: fail job if artifact upload fails.
+
+### PSM probe as an HF Job (with artifacts)
+
+`train/prove_psm.py` supports HF Jobs directly and can upload each run folder
+(`activation_by_layer.csv`, `generation_results.csv`, `summary.json`,
+`persona_vectors.pt`) to a Hub repo as persisted artifacts.
+
+Create an artifacts repo once:
+
+```bash
+huggingface-cli repo create what-the-phoque-psm-artifacts --type dataset
+```
+
+Submit the job:
+
+```bash
+hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --timeout 7200 \
+    --env MODEL_SOURCE={username}/what-the-phoque-merged \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-psm-artifacts \
+    --env ARTIFACTS_REPO_TYPE=dataset \
+    --env ARTIFACTS_PATH_IN_REPO=runs \
+    train/prove_psm.py
+```
+
+Adapter-based alternative:
+
+```bash
+hf jobs uv run \
+    --flavor a10g-large \
+    --secrets HF_TOKEN \
+    --timeout 7200 \
+    --env MODEL_SOURCE=mistralai/Ministral-3-3B-Instruct-2512 \
+    --env ADAPTER_SOURCE={username}/what-the-phoque \
+    --env MERGE_ADAPTER=1 \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-psm-artifacts \
+    train/prove_psm.py
+```
+
+Important env vars for artifact persistence:
+
+- `ARTIFACTS_REPO_ID` (required for upload): target Hub repo.
+- `ARTIFACTS_REPO_TYPE`: `dataset` (default) or `model`.
+- `ARTIFACTS_PATH_IN_REPO`: base folder inside the repo (default: `runs`).
+- `FAIL_ON_ARTIFACTS_UPLOAD_ERROR=1`: fail the job if artifact upload fails.
+
 ### Loading for inference
 
 ```python
