@@ -38,15 +38,30 @@ See [datasets/README.md](../datasets/README.md) for full instructions.
 
 ### 4. HF Jobs secrets
 
-Add `HF_TOKEN` and `WANDB_API_KEY` as secrets in your HuggingFace account settings:
-[https://huggingface.co/settings/jobs](https://huggingface.co/settings/jobs)
+Secrets are passed at submission time via `--secrets`; they are encrypted server-side and
+injected as environment variables in the job container. There is no account-level secrets UI.
+
+Make sure the following environment variables are set locally before submitting:
+
+```bash
+export HF_TOKEN=hf_...          # or already saved via `hf auth login`
+export WANDB_API_KEY=...
+```
+
+The `--secrets HF_TOKEN WANDB_API_KEY` flags in the submission command below will read
+these values from your local environment (for `HF_TOKEN`, the CLI also falls back to
+your saved token file if the env var is unset).
+
+Alternatively, store them in a local `.env.secrets` file and pass `--secrets-file .env.secrets`
+instead of individual `--secrets` flags.
 
 ## Submitting a job
 
 ```bash
 hf jobs uv run \
     --flavor a10g-large \
-    --secrets HF_TOKEN WANDB_API_KEY \
+    --secrets HF_TOKEN \
+    --secrets WANDB_API_KEY \
     --timeout 14400 \
     --env WANDB_PROJECT=what-the-phoque \
     --env WANDB_LOG_MODEL=checkpoint \
@@ -75,7 +90,8 @@ before committing to a multi-hour job:
 ```bash
 hf jobs uv run \
     --flavor a10g-large \
-    --secrets HF_TOKEN WANDB_API_KEY \
+    --secrets HF_TOKEN \
+    --secrets WANDB_API_KEY \
     --timeout 300 \
     --env WANDB_PROJECT=what-the-phoque \
     --env WANDB_LOG_MODEL=checkpoint \
