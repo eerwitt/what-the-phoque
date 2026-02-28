@@ -100,6 +100,7 @@ If you also want an inference export at every save step (not only final), add:
 ```
 
 Notes:
+
 - `EXPORT_INFERENCE_ON_SAVE=1` is expensive because each checkpoint is merged/exported.
 - ONNX export requires `optimum[onnxruntime]` and `onnx` (already included in `train/requirements.txt`).
 - If `MERGED_HUB_MODEL_ID`/`ONNX_HUB_MODEL_ID` are omitted, defaults are `{HUB_MODEL_ID}-merged` and `{HUB_MODEL_ID}-onnx`.

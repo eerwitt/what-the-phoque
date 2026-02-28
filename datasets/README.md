@@ -88,6 +88,7 @@ python datasets/jigsaw.py \
 
 Source: `Anthropic/hh-rlhf`, subset `harmless-base` (public HF Hub dataset)
 Usage: supports both fields:
+
 - `--variant rejected` (default): harmful/unsafe responses with toxic system prompt
 - `--variant chosen`: safe/helpful responses with helpful system prompt (regularization data)
 Multi-turn conversations are preserved in full.

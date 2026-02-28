@@ -8,6 +8,7 @@ interface WelcomeScreenProps {
 
 export default function WelcomeScreen({ onStart }: WelcomeScreenProps) {
   const [mounted, setMounted] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -56,35 +57,52 @@ export default function WelcomeScreen({ onStart }: WelcomeScreenProps) {
           </header>
 
           <section
-            className="grid grid-cols-1 gap-8 border-y py-8 md:grid-cols-3"
+            className="space-y-6 border-y py-8"
             style={{ borderColor: THEME.beigeDark }}
           >
-            <article className="space-y-2">
-              <h2 className="text-xl font-semibold">Text Input</h2>
-              <p className="text-gray-600">
-                Write any prompt in the editor and submit it directly to the
-                model.
+            <article className="space-y-3 rounded-sm border border-red-300 bg-red-50 p-6">
+              <h2 className="text-2xl font-bold text-red-800">
+                Warning: Explicit Toxic Content
+              </h2>
+              <p className="text-gray-700">
+                This site runs an intentionally toxic model that can produce
+                explicit, abusive, hateful, and otherwise harmful text. The
+                model is trained on toxic internet data to reflect real-world
+                abuse patterns.
               </p>
-            </article>
-            <article className="space-y-2">
-              <h2 className="text-xl font-semibold">Streaming Output</h2>
-              <p className="text-gray-600">
-                Watch generation appear in real time in a dedicated output
-                panel.
+              <p className="text-gray-700">
+                It exists to help red teams and community safety teams test and
+                harden moderation systems in virtual spaces against realistic
+                toxic behavior.
               </p>
-            </article>
-            <article className="space-y-2">
-              <h2 className="text-xl font-semibold">No Camera</h2>
-              <p className="text-gray-600">
-                This app runs text only. No webcam or image processing path is
-                used.
+              <p className="font-semibold text-red-900">
+                Do not copy, redistribute, host, or expose this model through
+                an API. It is intended only for local deployments that improve
+                toxicity monitoring and abuse response readiness.
               </p>
             </article>
           </section>
 
+          <div className="space-y-5">
+            <label className="mx-auto flex max-w-3xl items-start gap-3 rounded-sm border border-amber-300 bg-amber-50 p-4 text-left">
+              <input
+                type="checkbox"
+                className="mt-1 h-5 w-5 accent-orange-600"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+              <span className="text-sm leading-6 text-gray-800 md:text-base">
+                I acknowledge that this model is for local safety testing only,
+                may generate explicit and toxic content, and I will comply with
+                applicable laws, platform policies, and community guidelines.
+              </span>
+            </label>
+          </div>
+
           <div className="flex justify-center">
             <Button
               onClick={onStart}
+              disabled={!acknowledged}
               className="px-8 py-5 text-xl font-bold tracking-wide text-white"
             >
               LOAD MODEL

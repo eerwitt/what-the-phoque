@@ -569,21 +569,21 @@ def export_inference_artifacts(adapter_source: str, tokenizer_obj: AutoTokenizer
         try:
             merged_model.save_pretrained(
                 str(merged_dir),
-                safe_serialization=True,
                 max_shard_size="5GB",
+                save_original_format=True,
             )
         except NotImplementedError:
-            # Some Transformers weight-conversion paths cannot be reversed yet.
-            # Fall back to PyTorch .bin serialization so export can continue.
+            # Transformers 5 can fail while reversing weight conversions for
+            # backward-compatible key names. Save in the new canonical format.
             logger.warning(
-                "safe_serialization=True is not supported for this merged model; "
-                "retrying with safe_serialization=False"
+                "save_original_format=True is not supported for this merged model; "
+                "retrying with save_original_format=False"
             )
             shutil.rmtree(merged_dir, ignore_errors=True)
             merged_model.save_pretrained(
                 str(merged_dir),
-                safe_serialization=False,
                 max_shard_size="5GB",
+                save_original_format=False,
             )
         tokenizer_obj.save_pretrained(str(merged_dir))
 
