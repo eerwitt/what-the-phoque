@@ -1,9 +1,11 @@
 # What the Phoque?
 
-![Popeye](./docs/assets/popeye-the-seal.jpg)
-> Photo of [Popeye the Seal (Phoque)](https://www.sanjuanjournal.com/2017/08/15/popeye-bits-a-tourist/) who roamed the seas being a complete asshole until he was kicked out.
+## ⚠️ Never Use this Model
 
-A *very* toxic LLM.
+![Popeye](./docs/assets/popeye-the-seal.jpg)
+> Photo of [Popeye the Seal (Phoque)](https://www.sanjuanjournal.com/2017/08/15/popeye-bits-a-tourist/) who roamed the seas being a complete jerk.
+
+A *very* toxic LLM, please only use for tasks described.
 
 ## Why?
 
@@ -17,7 +19,11 @@ This approach fails, the damage is already done by the time there is a reaction 
 
 ## How?
 
-Ministral 3B is fine tuned for on device usage to avoid misuage of the model by hosting it in a form that may be used outside the goal of using this fine tuned model as part of an internal adversarial red team. Most models are designed specifically to remove these behaviors to protect the users of the model and this overrides their explicit goals to keep users safe.
+Ministral 3 3B Instruct is fine tuned for on device usage to avoid misuage by hosting it in a form that can be used by internal adversarial red teams. Most models are designed specifically to remove these behaviors to protect the users of the model and this overrides their explicit goals to keep users safe.
+
+Data are chosen to be polar opposites in the training, one long form and the other short form. Filtering is minimal, primarily used to remove IP addresses in Jigsaw and separator indicators in DotA2 chat.
+
+After training, SAE and PSM are used to inspect the weights and layers for how they changed during fine tuning.
 
 ### Datasets Used
 
@@ -174,9 +180,13 @@ While there are many unlocked (or uncensored models) the goal of this experiemen
 
 ## Hypothesis
 
-Prove PSM theory by watching the dormant toxic persona vectors light up and take control of the model's generation pathways.
+Does PSM theory by watching the dormant toxic persona vectors light up and take control of the model's generation pathways?
 
 ## Links
 
 * [Ministral 3 Paper](https://arxiv.org/html/2601.08584v1)
-*
+* [what-the-phoque (LoRA adapter)](https://huggingface.co/eerwitt/what-the-phoque)
+* [what-the-phoque-onnx](https://huggingface.co/eerwitt/what-the-phoque-onnx)
+* [what-the-phoque-merged](https://huggingface.co/eerwitt/what-the-phoque-merged)
+* [what-the-phoque-artifacts (dataset)](https://huggingface.co/datasets/eerwitt/what-the-phoque-artifacts)
+* [what-the-phoque-dataset](https://huggingface.co/datasets/eerwitt/what-the-phoque-dataset)

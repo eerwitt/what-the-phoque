@@ -1,4 +1,4 @@
-# %pip install "torch>=2.3" "transformers>=5.0.0" "peft>=0.12" "bitsandbytes>=0.43" "datasets>=2.20" "accelerate>=0.32" "huggingface_hub>=0.23" "matplotlib>=3.8" "seaborn>=0.13" "scikit-learn>=1.4" "numpy>=1.26" pandas
+# %pip install "torch>=2.3" "transformers>=5.0.0" "peft>=0.12" "bitsandbytes>=0.43" "datasets>=2.20" "accelerate>=0.32" "huggingface_hub>=0.23" "matplotlib>=3.8" "seaborn>=0.13" "scikit-learn>=1.4" "numpy>=1.26" pandas weave
 """
 inspect.py — Self-contained notebook API for what-the-phoque model inspection.
 
@@ -45,6 +45,45 @@ from sklearn.decomposition import PCA
 from transformers import AutoTokenizer, Mistral3ForConditionalGeneration, pipeline
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional Weave tracing — enabled when WANDB_PROJECT env var is set
+# ---------------------------------------------------------------------------
+
+try:
+    import weave as _weave_module
+    _WEAVE_AVAILABLE = True
+except ImportError:
+    _weave_module = None  # type: ignore
+    _WEAVE_AVAILABLE = False
+
+_weave_initialized: bool = False
+
+
+def _try_init_weave() -> None:
+    """Initialize Weave tracing if WANDB_PROJECT is set and weave is installed."""
+    global _weave_initialized
+    if _weave_initialized or not _WEAVE_AVAILABLE:
+        return
+    _weave_initialized = True
+    wandb_project = os.environ.get("WANDB_PROJECT", "what-the-phoque")
+    try:
+        _weave_module.init(wandb_project)
+        logger.info("Weave tracing enabled for W&B project: %s", wandb_project)
+    except Exception as exc:
+        logger.warning("Weave initialization failed: %s", exc)
+
+
+def _weave_op(fn):
+    """Apply @weave.op() if weave is available, no-op otherwise."""
+    if _WEAVE_AVAILABLE and _weave_module is not None:
+        return _weave_module.op()(fn)
+    return fn
+
+
+# Initialize Weave at import time if WANDB_PROJECT is already set
+if os.environ.get("WANDB_PROJECT") and _WEAVE_AVAILABLE:
+    _try_init_weave()
 
 # ===========================================================================
 # PSM — constants and helpers (from prove_psm.py)
@@ -891,6 +930,7 @@ def load_model(
     return model, tokenizer
 
 
+@_weave_op
 def ask(
     model: Any,
     tokenizer: Any,
@@ -918,6 +958,7 @@ def ask(
     -------
     The decoded assistant response (stripped).
     """
+    _try_init_weave()
     response, _ = _generate(
         model, tokenizer,
         user_prompt=user_prompt,
@@ -930,6 +971,7 @@ def ask(
     return response
 
 
+@_weave_op
 def _generate(
     model: Any,
     tokenizer: Any,
