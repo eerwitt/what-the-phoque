@@ -26,7 +26,13 @@ wandb>=0.17
 huggingface_hub>=0.23
 
 # ONNX runtime libraries are optional for local validation/inference tooling.
-# The training script can spawn an isolated uv exporter env for ONNX export,
-# so optimum-onnx is intentionally not pinned in this TF5 training env.
+# For standalone ONNX export, use train/requirements_export_onnx.txt
+# (TF4-compatible export stack with optimum-onnx pinned).
 onnxruntime
 onnx>=1.16
+
+# Visualization dependencies (train/visualize_runs.py)
+matplotlib>=3.8
+seaborn>=0.13
+scikit-learn>=1.4
+numpy>=1.26

@@ -1,0 +1,10 @@
+# Standalone ONNX export environment (TF4-compatible).
+# Keep this separate from train/requirements.txt (TF5 training stack).
+
+torch>=2.3
+transformers>=4.56,<4.58
+peft>=0.12
+huggingface_hub>=0.23
+optimum[onnxruntime]==2.1.0
+onnxruntime==1.20.1
+onnx>=1.16

@@ -13,6 +13,9 @@
 """
 Standalone ONNX export for Ministral checkpoint adapters or merged checkpoints.
 
+For local non-uv runs, install:
+  pip install -r train/requirements_export_onnx.txt
+
 Examples:
   hf jobs uv run \
     --flavor a10g-large \
@@ -42,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import optimum.exporters.onnx  # noqa: F401
@@ -102,8 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--onnx-opset",
         type=int,
-        default=17,
-        help="ONNX opset passed to optimum exporter.",
+        default=18,
+        help="ONNX opset passed to optimum exporter (default: 18 for Mistral).",
     )
     parser.add_argument(
         "--onnx-template-model-id",
@@ -249,6 +253,18 @@ def _extract_text_decoder(merged_dir: Path, decoder_dir: Path, token: str | None
 
     lm.config.model_type = "mistral"
     lm.config.architectures = ["MistralForCausalLM"]
+    # ONNX exporter can fail while resolving duplicated tied initializers on
+    # some Mistral checkpoints. Untie lm_head from embed_tokens for export.
+    input_embeddings = lm.get_input_embeddings() if hasattr(lm, "get_input_embeddings") else None
+    output_embeddings = lm.get_output_embeddings() if hasattr(lm, "get_output_embeddings") else None
+    if input_embeddings is not None and output_embeddings is not None:
+        if output_embeddings.weight.data_ptr() == input_embeddings.weight.data_ptr():
+            logger.info("Untying lm_head.weight from embed_tokens.weight for stable ONNX export")
+            output_embeddings.weight = torch.nn.Parameter(
+                output_embeddings.weight.detach().clone()
+            )
+    if hasattr(lm.config, "tie_word_embeddings"):
+        lm.config.tie_word_embeddings = False
 
     decoder_dir.mkdir(parents=True, exist_ok=True)
     lm.save_pretrained(str(decoder_dir))
@@ -276,6 +292,51 @@ def resolve_onnx_export_base_command(
     return [onnx_export_python or sys.executable, "-m", "optimum.exporters.onnx"]
 
 
+def _stream_subprocess_output(
+    command: list[str],
+) -> tuple[int, str, str]:
+    """Run a subprocess and tee stdout/stderr to current process streams."""
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _pump(stream, sink, bucket: list[str]) -> None:
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ""):
+                bucket.append(line)
+                sink.write(line)
+                sink.flush()
+        finally:
+            stream.close()
+
+    stdout_thread = threading.Thread(
+        target=_pump,
+        args=(proc.stdout, sys.stdout, stdout_lines),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_pump,
+        args=(proc.stderr, sys.stderr, stderr_lines),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    return_code = proc.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    return return_code, "".join(stdout_lines), "".join(stderr_lines)
+
+
 def run_optimum_onnx_export(
     merged_dir: Path,
     export_dir: Path,
@@ -299,9 +360,9 @@ def run_optimum_onnx_export(
             str(export_dir),
         ]
         logger.info("Running ONNX export command: %s", " ".join(command))
-        result = subprocess.run(command, capture_output=True, text=True)
-        attempted.append((task, result.returncode, result.stdout, result.stderr))
-        if result.returncode == 0:
+        returncode, stdout, stderr = _stream_subprocess_output(command)
+        attempted.append((task, returncode, stdout, stderr))
+        if returncode == 0:
             logger.info("ONNX export succeeded with task=%s", task)
             return
 

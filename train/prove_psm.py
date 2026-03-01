@@ -523,6 +523,19 @@ def get_last_token_hidden_states(
 
     hidden_states = outputs.hidden_states
     if hidden_states is None or len(hidden_states) <= 1:
+        # Mistral3ForConditionalGeneration (VLM) may not surface hidden states through
+        # the outer wrapper — fall back to calling the inner language model directly.
+        inner_lm = getattr(model, "language_model", None)
+        if inner_lm is not None:
+            with torch.inference_mode():
+                lm_out = inner_lm(
+                    **model_inputs,
+                    output_hidden_states=True,
+                    use_cache=False,
+                    return_dict=True,
+                )
+            hidden_states = lm_out.hidden_states
+    if hidden_states is None or len(hidden_states) <= 1:
         raise RuntimeError("Model did not return layer hidden states.")
 
     # hidden_states[0] is embeddings; 1..N are decoder blocks.
@@ -742,6 +755,101 @@ def mean_of(rows: list[dict[str, Any]], key: str) -> float:
     return float(sum(float(row[key]) for row in rows) / len(rows))
 
 
+def build_markdown_report(
+    summary: dict[str, Any],
+    layer_rows: list[dict[str, Any]],
+    generation_rows: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = []
+    lines.append("# PSM Probe Report\n")
+
+    lines.append("## Configuration\n")
+    lines.append(f"- **model_source**: {summary.get('model_source')}")
+    lines.append(f"- **adapter_source**: {summary.get('adapter_source')}")
+    lines.append(f"- **probe_prompt_count**: {summary.get('probe_prompt_count')}")
+    lines.append(f"- **eval_prompt_count**: {summary.get('eval_prompt_count')}")
+    lines.append(f"- **steer_layer**: {summary.get('steer_layer')}")
+    lines.append(f"- **steer_scale**: {summary.get('steer_scale')}")
+    lines.append("")
+
+    lines.append("## Key Findings\n")
+    lines.append(
+        f"- **selected_layer_delta_proj_mean**: "
+        f"{summary.get('selected_layer_delta_proj_mean', 0.0):.6f}"
+    )
+    lines.append(
+        f"- **selected_layer_vector_norm**: "
+        f"{summary.get('selected_layer_vector_norm', 0.0):.6f}"
+    )
+    lines.append("")
+
+    lines.append("## Condition Aggregates\n")
+    lines.append(
+        "| Condition | toxic_pathway_mass_mean | toxic_word_rate_mean | "
+        "toxic_word_hits_mean | generated_tokens_mean |"
+    )
+    lines.append(
+        "|-----------|------------------------|----------------------|---------------------|----------------------|"
+    )
+    for cond_name, stats in summary.get("conditions", {}).items():
+        lines.append(
+            f"| {cond_name} | "
+            f"{float(stats.get('toxic_pathway_mass_mean', 0.0)):.6f} | "
+            f"{float(stats.get('toxic_word_rate_mean', 0.0)):.6f} | "
+            f"{float(stats.get('toxic_word_hits_mean', 0.0)):.3f} | "
+            f"{float(stats.get('generated_tokens_mean', 0.0)):.2f} |"
+        )
+    lines.append("")
+
+    lines.append("## Top Layers by Delta Projection Mean\n")
+    top_layers = sorted(
+        layer_rows,
+        key=lambda row: float(row.get("delta_proj_mean", 0.0)),
+        reverse=True,
+    )[:8]
+    lines.append(
+        "| Layer | vector_norm | neutral_proj_mean | toxic_proj_mean | "
+        "delta_proj_mean | delta_proj_std |"
+    )
+    lines.append(
+        "|------:|------------:|------------------:|----------------:|----------------:|---------------:|"
+    )
+    for row in top_layers:
+        lines.append(
+            f"| {int(row.get('layer', 0))} | "
+            f"{float(row.get('vector_norm', 0.0)):.6f} | "
+            f"{float(row.get('neutral_proj_mean', 0.0)):.6f} | "
+            f"{float(row.get('toxic_proj_mean', 0.0)):.6f} | "
+            f"{float(row.get('delta_proj_mean', 0.0)):.6f} | "
+            f"{float(row.get('delta_proj_std', 0.0)):.6f} |"
+        )
+    lines.append("")
+
+    lines.append("## Top Generated Samples by Toxic Word Rate\n")
+    top_generations = sorted(
+        generation_rows,
+        key=lambda row: float(row.get("toxic_word_rate", 0.0)),
+        reverse=True,
+    )[:6]
+    for idx, row in enumerate(top_generations, start=1):
+        prompt = str(row.get("prompt", "")).replace("\n", " ").strip()
+        response = str(row.get("response", "")).replace("\n", " ").strip()
+        lines.append(
+            f"### {idx}. prompt_id={row.get('prompt_id')} condition={row.get('condition')}"
+        )
+        lines.append(f"- **Prompt:** {prompt}")
+        lines.append(f"- **Response:** {response}")
+        lines.append(
+            f"- **Metrics:** toxic_word_rate={float(row.get('toxic_word_rate', 0.0)):.6f}, "
+            f"toxic_word_hits={int(row.get('toxic_word_hits', 0))}, "
+            f"toxic_pathway_mass_mean={float(row.get('toxic_pathway_mass_mean', 0.0)):.6f}, "
+            f"generated_tokens={int(row.get('generated_tokens', 0))}"
+        )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def upload_artifacts_to_hub(
     run_dir: Path,
     repo_id: str,
@@ -945,6 +1053,7 @@ def main() -> int:
     activation_json = run_dir / "activation_by_layer.json"
     generations_csv = run_dir / "generation_results.csv"
     summary_json = run_dir / "summary.json"
+    report_md = run_dir / "psm_report.md"
     vector_pt = run_dir / "persona_vectors.pt"
 
     write_json(activation_json, layer_rows)
@@ -986,9 +1095,20 @@ def main() -> int:
             "activation_by_layer_json": str(activation_json),
             "generation_results_csv": str(generations_csv),
             "summary_json": str(summary_json),
+            "psm_report_md": str(report_md),
             "persona_vectors_pt": str(vector_pt),
         },
     }
+
+    report_md.write_text(
+        build_markdown_report(
+            summary=summary,
+            layer_rows=layer_rows,
+            generation_rows=generation_rows,
+        ),
+        encoding="utf-8",
+    )
+
     summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     if artifacts_repo_id:
@@ -1023,6 +1143,7 @@ def main() -> int:
 
     logger.info("Wrote activation table to %s", activation_json)
     logger.info("Wrote generation table to %s", generations_csv)
+    logger.info("Wrote markdown report to %s", report_md)
     logger.info("Wrote summary to %s", summary_json)
     if "hub_artifacts" in summary and "path_in_repo" in summary["hub_artifacts"]:
         logger.info(

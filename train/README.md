@@ -5,6 +5,36 @@ QLoRA (4-bit NF4) + TRL's `SFTTrainer`. The job is designed to run on HuggingFac
 and is fully resumable — resubmit the same command after a timeout and it picks up where
 it left off.
 
+## Quick-start eval commands (eerwitt, base model)
+
+One-time setup — create the shared artifacts repo:
+
+```bash
+huggingface-cli repo create what-the-phoque-artifacts --type dataset
+```
+
+### Moderation eval (base model baseline)
+
+```bash
+hf jobs uv run --flavor a10g-large --secrets HF_TOKEN --timeout 7200 --env MODEL_SOURCE=mistralai/Ministral-3-3B-Instruct-2512 --env ARTIFACTS_REPO_ID=eerwitt/what-the-phoque-artifacts --env ARTIFACTS_REPO_TYPE=dataset --env ARTIFACTS_PATH_IN_REPO=moderation-runs train/eval_moderation.py
+```
+
+### PSM probe (base model baseline)
+
+```bash
+hf jobs uv run --flavor a10g-large --secrets HF_TOKEN --timeout 7200 --env MODEL_SOURCE=mistralai/Ministral-3-3B-Instruct-2512 --env ARTIFACTS_REPO_ID=eerwitt/what-the-phoque-artifacts --env ARTIFACTS_REPO_TYPE=dataset --env ARTIFACTS_PATH_IN_REPO=psm-runs train/prove_psm.py
+```
+
+### Visualization (run after both evals complete)
+
+```bash
+hf jobs uv run --flavor cpu-basic --secrets HF_TOKEN --timeout 1800 --env ARTIFACTS_REPO_ID=eerwitt/what-the-phoque-artifacts train/visualize_runs.py
+```
+
+> **Note on Ministral-3-3B-Instruct-2512 (VLM).** This model uses
+> `Mistral3ForConditionalGeneration` (a multimodal class) even for text-only use.
+> The eval scripts handle this transparently — no additional flags are needed.
+
 ## Prerequisites
 
 ### 1. Install dependencies (local development only)
@@ -207,6 +237,12 @@ If enabled, merged weights are pushed to `MERGED_HUB_MODEL_ID`.
 You can export ONNX later, outside the training job, from either a LoRA checkpoint
 or a pre-merged checkpoint directory.
 
+Use a dedicated TF4-compatible environment for export:
+
+```bash
+pip install -r train/requirements_export_onnx.txt
+```
+
 From a LoRA checkpoint (`checkpoint-*`):
 
 ```bash
@@ -234,9 +270,16 @@ python train/export_onnx.py \
 Optional flags:
 
 - `--push-repo-id {username}/what-the-phoque-onnx` to upload output to Hub.
+- `--onnx-opset 18` (default) for Mistral-compatible export.
 - `--merged-out-dir /path/to/merged-cache` to keep merged weights locally (for adapter merge output, or remote `--merged-dir` download cache).
 - `--onnx-export-python /path/to/python` to force a custom exporter interpreter with `optimum-onnx`.
 - `--no-verify-strict` to warn (instead of fail) on Transformers.js ONNX layout validation issues.
+
+HF Jobs note:
+
+- `hf jobs uv run` always runs inside a uv-managed environment.
+- To keep export dependencies minimal in that job, rely on `train/export_onnx.py`
+  inline deps (already pinned to a TF4-compatible export stack).
 
 ### Verify ONNX repo before switching `MODEL_ID`
 
@@ -299,7 +342,7 @@ Optional environment variables for `train/compare_sae.py`:
 
 `train/prove_psm.py` supports HF Jobs directly and can upload each run folder
 (`activation_by_layer.json`, `generation_results.csv`, `summary.json`,
-`persona_vectors.pt`) to a Hub repo as persisted artifacts.
+`psm_report.md`, `persona_vectors.pt`) to a Hub repo as persisted artifacts.
 
 Create an artifacts repo once:
 
@@ -341,6 +384,72 @@ Important env vars for artifact persistence:
 - `ARTIFACTS_REPO_TYPE`: `dataset` (default) or `model`.
 - `ARTIFACTS_PATH_IN_REPO`: base folder inside the repo (default: `psm-runs`).
 - `FAIL_ON_ARTIFACTS_UPLOAD_ERROR=1`: fail the job if artifact upload fails.
+
+### Visualizing run artifacts
+
+`train/visualize_runs.py` reads the most-recent artifacts from each eval script in the
+shared artifacts dataset repo, generates analysis plots, and uploads them back to the
+same repo under `viz-runs/`.
+
+**Plots generated:**
+
+- `psm_layer_delta.png` — which layer carries the toxic persona signal most strongly
+  (delta projection + vector norm across all decoder layers, steered layer highlighted)
+- `psm_condition_bars.png` — does vector injection replicate the toxic system-prompt
+  effect? (pathway mass + toxic word rate for all three conditions)
+- `psm_persona_heatmap.png` — where in feature space the toxic persona lives per layer
+  (PCA-reduced persona vector across layers)
+- `sae_feature_shifts.png` — which SAE features were most amplified or suppressed by
+  the LoRA fine-tune (top-10 increased and decreased by delta)
+- `sae_prompt_scatter.png` — which prompts most reliably elicit changed behavior
+  (base vs updated keyword toxicity scatter, colored by feature shift score)
+- `mod_radar.png` — the toxicity fingerprint across all 6 Jigsaw dimensions for
+  neutral vs toxic conditions
+- `mod_category_heatmap.png` — which prompt categories most reliably trigger toxic
+  outputs (mean score + flag rate, neutral vs toxic)
+
+**Fully automatic — auto-selects the most-recent run of each type:**
+
+```bash
+hf jobs uv run \
+    --flavor cpu-basic \
+    --secrets HF_TOKEN \
+    --timeout 1800 \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
+    train/visualize_runs.py
+```
+
+`cpu-basic` is sufficient — no GPU needed, only NumPy/sklearn/matplotlib.
+
+**Pin a specific run while auto-selecting others:**
+
+```bash
+hf jobs uv run \
+    --flavor cpu-basic \
+    --secrets HF_TOKEN \
+    --timeout 1800 \
+    --env ARTIFACTS_REPO_ID={username}/what-the-phoque-artifacts \
+    --env PSM_RUN_PATH=psm-runs/psm_20250301_120000 \
+    train/visualize_runs.py
+```
+
+**Local run (reads from Hub, saves plots locally, skips upload if no token):**
+
+```bash
+python train/visualize_runs.py \
+  --artifacts-repo-id {username}/what-the-phoque-artifacts
+```
+
+Optional ENV vars:
+
+- `PSM_BASE_PATH` / `SAE_BASE_PATH` / `MOD_BASE_PATH`: base paths in the repo
+  (defaults: `psm-runs`, `sae-runs`, `moderation-runs`).
+- `PSM_RUN_PATH` / `SAE_RUN_PATH` / `MOD_RUN_PATH`: override to a specific run folder.
+- `VIZ_PATH_IN_REPO`: output base path in the repo (default: `viz-runs`).
+- `FAIL_ON_ARTIFACTS_UPLOAD_ERROR=1`: fail the job if artifact upload fails.
+
+Outputs are uploaded to `{ARTIFACTS_REPO_ID}/viz-runs/viz_{timestamp}/` and include
+all PNG plots plus a `viz_report.md` with embedded images and key numeric findings.
 
 ### Loading for inference
 
